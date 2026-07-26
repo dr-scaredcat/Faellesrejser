@@ -28,15 +28,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('[Fællesrejser] Kunne ikke hente profil for bruger', userId, error);
+    }
+
     // Brugeren findes i auth.users, men mangler en profil-række i
-    // faellesrejser.profiles. Det sker typisk hvis kontoen oprindeligt blev
-    // oprettet gennem en anden app, der deler samme Supabase-projekt (og
-    // dermed samme auth.users), før denne app fandtes — så triggeren der
-    // normalt opretter profilen ved signup aldrig nåede at køre for den
-    // bruger. Vi opretter derfor profilen her i stedet, så brugeren ikke
-    // ender i en tilstand uden profil (som fx skjuler admin-menuen og
-    // blokerer oprettelse af rejser). Nye profiler oprettet på denne måde
-    // er IKKE admin som udgangspunkt — det skal sættes manuelt i databasen.
+    // faellesrejser.profiles (fx fordi kontoen oprindeligt blev oprettet
+    // gennem en anden app der deler samme Supabase-projekt). Vi opretter
+    // derfor profilen her i stedet. Nye profiler oprettet på denne måde er
+    // IKKE admin som udgangspunkt — det skal sættes manuelt i databasen.
     if (error && error.code === 'PGRST116') {
       const { data: userData } = await supabase.auth.getUser();
       const user = userData.user;
@@ -45,7 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const { data: created } = await supabase
+      const { data: created, error: insertError } = await supabase
         .from('profiles')
         .insert({
           id: user.id,
@@ -55,6 +56,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         })
         .select()
         .single();
+
+      if (insertError) {
+        // eslint-disable-next-line no-console
+        console.error('[Fællesrejser] Kunne ikke oprette manglende profil automatisk', insertError);
+      }
 
       setProfile((created as Profile | null) ?? null);
       return;
