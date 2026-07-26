@@ -1,0 +1,8 @@
+name = "faellesrejserapp"
+
+# Fortæller Wrangler at dette er en klassisk Cloudflare Pages-deployment af
+# statiske filer (bygget af Vite til "dist"), i stedet for at forsøge at
+# bygge/deploye det som en Worker via Vite-plugin-integrationen (som kræver
+# Vite 6+). Appen har ingen server-side Worker-logik — det er en ren SPA
+# der taler direkte med Supabase fra browseren.
+pages_build_output_dir = "dist"
