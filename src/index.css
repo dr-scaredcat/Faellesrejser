@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Standardværdier for temafarver ("R G B", uden kommaer, jf. Tailwinds opacity-mønster).
+   Overskrives i JS ved opstart med det aktive tema fra databasen (se ThemeContext) —
+   disse værdier fungerer som fallback, fx før temaet er hentet, eller hvis man ikke er logget ind. */
+:root {
+  --color-river-50: 238 245 245;
+  --color-river-100: 211 230 229;
+  --color-river-200: 167 205 202;
+  --color-river-300: 121 178 172;
+  --color-river-400: 77 150 143;
+  --color-river-500: 47 122 115;
+  --color-river-600: 34 97 92;
+  --color-river-700: 27 76 72;
+  --color-river-800: 21 58 56;
+  --color-river-900: 15 41 40;
+
+  --color-sand-50: 251 247 239;
+  --color-sand-100: 243 233 211;
+  --color-sand-200: 230 209 163;
+  --color-sand-300: 215 182 113;
+  --color-sand-400: 201 158 74;
+  --color-sand-500: 182 134 47;
+
+  --color-danger-100: 254 226 226;
+  --color-danger-500: 239 68 68;
+  --color-danger-600: 220 38 38;
+  --color-danger-700: 185 28 28;
+
+  --color-surface: 255 255 255;
+
+  --color-button-text: 255 255 255;
+}
+
+@layer base {
+  h1, h2, h3 {
+    @apply font-display;
+  }
+  :focus-visible {
+    @apply outline outline-2 outline-offset-2 outline-sand-400;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary {
+    @apply btn bg-river-600 text-buttontext hover:bg-river-700;
+  }
+  .btn-secondary {
+    @apply btn bg-river-100 text-river-800 hover:bg-river-200;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 text-buttontext hover:bg-red-700;
+  }
+  .card {
+    @apply bg-surface rounded-xl border border-river-100 shadow-sm;
+  }
+  .input {
+    @apply w-full rounded-lg border border-river-200 px-3 py-2 text-sm focus:border-river-500 focus:ring-1 focus:ring-river-500 outline-none;
+  }
+  .label {
+    @apply block text-sm font-medium text-river-800 mb-1;
+  }
+  .tab {
+    @apply px-3 py-2 text-sm font-medium rounded-lg whitespace-nowrap;
+  }
+  .tab-active {
+    @apply bg-river-600 text-buttontext;
+  }
+  .tab-inactive {
+    @apply text-river-700 hover:bg-river-100;
+  }
+}
