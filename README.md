@@ -91,3 +91,5 @@ src/components/           Delte UI-komponenter (nav, route guards)
   Supabase-klienten er sat op til dette i `src/lib/supabase.ts` (`db: { schema: 'faellesrejser' }`).
   Vil I omdøbe schemaet, skal I finde/erstatte `faellesrejser` i migrationerne samt i
   `src/lib/supabase.ts` og `src/context/ThemeContext.tsx`.
+
+  build
