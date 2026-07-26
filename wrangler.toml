@@ -1,8 +1,12 @@
 name = "faellesrejserapp"
+compatibility_date = "2026-07-26"
 
-# Fortæller Wrangler at dette er en klassisk Cloudflare Pages-deployment af
-# statiske filer (bygget af Vite til "dist"), i stedet for at forsøge at
-# bygge/deploye det som en Worker via Vite-plugin-integrationen (som kræver
-# Vite 6+). Appen har ingen server-side Worker-logik — det er en ren SPA
-# der taler direkte med Supabase fra browseren.
-pages_build_output_dir = "dist"
+# Worker der udelukkende server statiske filer (den bundlede React-app fra
+# Vite) via Cloudflares indbyggede "Static Assets"-funktion. Der er ingen
+# server-side Worker-kode nødvendig — appen taler direkte med Supabase fra
+# browseren, så en ren asset-Worker er alt der skal til.
+[assets]
+directory = "./dist"
+# Sørger for at alle ukendte stier (fx /rejser/123/pakkeliste ved
+# genindlæsning) falder tilbage til index.html, som React Router så styrer.
+not_found_handling = "single-page-application"
