@@ -133,7 +133,9 @@ export default function RoutePlannerPage() {
   const totalKm = dayResults.reduce((s, d) => s + d.km, 0);
   const totalHours = dayResults.reduce((s, d) => s + d.hours, 0);
 
-  // Historisk hastighed baseret på alle loggede sejltider (km / sejltid uden pauser).
+  // Historisk hastighed baseret på alle loggede sejltider (km / sejltid, hver
+  // registrering for sig — bevidst ikke dedupliceret, se Statistik-siden for
+  // hvorfor totaler og hastighed behandles forskelligt).
   const historicalSpeeds = useMemo(() => {
     return sailingTimes
       .map((st) => {
@@ -158,7 +160,7 @@ export default function RoutePlannerPage() {
   const speedWithPausesCI = confidenceInterval95(historicalSpeedsWithPauses);
 
   function estimateFromSpeed(ci: ReturnType<typeof confidenceInterval95>, distanceKm: number) {
-    if (ci.mean === 0) return null;
+    if (ci.mean === 0 || distanceKm === 0) return null;
     return {
       mean: distanceKm / ci.mean,
       low: ci.high > 0 ? distanceKm / ci.high : 0,
@@ -218,6 +220,8 @@ export default function RoutePlannerPage() {
             const toStop = d.to ? stopById[d.to] : null;
             const fromIdx = sortedStops.findIndex((s) => s.id === d.from);
             const options = sortedStops.slice(fromIdx + 1);
+            const dayPureEstimate = estimateFromSpeed(speedCI, d.km);
+            const dayWithPausesEstimate = estimateFromSpeed(speedWithPausesCI, d.km);
             return (
               <div key={d.day} className="card p-5">
                 <div className="mb-2 flex items-center justify-between">
@@ -242,8 +246,20 @@ export default function RoutePlannerPage() {
                 {toStop && (
                   <>
                     <p className="text-sm text-river-600">
-                      {d.km.toFixed(1)} km · ca. {formatHours(d.hours)}
+                      {d.km.toFixed(1)} km · skematid ca. {formatHours(d.hours)}
                     </p>
+                    {dayPureEstimate && speedCI.n >= 2 && (
+                      <p className="mt-1 text-xs text-river-500">
+                        Historisk sejltid: ca. {formatHours(dayPureEstimate.mean)} [
+                        {formatHours(dayPureEstimate.low)} : {formatHours(dayPureEstimate.high)}]
+                      </p>
+                    )}
+                    {dayWithPausesEstimate && speedWithPausesCI.n >= 2 && (
+                      <p className="text-xs text-river-500">
+                        Historisk tid inkl. pauser: ca. {formatHours(dayWithPausesEstimate.mean)} [
+                        {formatHours(dayWithPausesEstimate.low)} : {formatHours(dayWithPausesEstimate.high)}]
+                      </p>
+                    )}
                     {toStop.description && <p className="mt-1 text-sm text-river-500">{toStop.description}</p>}
                     {toStop.tags && toStop.tags.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
