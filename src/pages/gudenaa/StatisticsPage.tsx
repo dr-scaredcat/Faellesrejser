@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useTrip } from '../../context/TripContext';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
-import { computeRoutePlanDaySegments, segmentBetween, sortStops } from '../../lib/gudenaa';
-import { computeDedupedTotals } from '../../lib/gudenaaStats';
+import { computeRoutePlanDaySegments, sortStops } from '../../lib/gudenaa';
+import { computeDedupedTotals, groupSailingDays, type SailingDay } from '../../lib/gudenaaStats';
 import { formatHours, formatKmT } from '../../lib/stats';
 import { fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
 import {
@@ -55,26 +55,9 @@ export default function StatisticsPage() {
     return map;
   }, [gudenaaTrips]);
 
-  // Rå per-registrering-data. Bruges til tempo-modellen og highlights — her
-  // skal HVER registrering tælle for sig, uanset om flere har logget samme
-  // (eller overlappende) stræk.
-  const withDistance = useMemo(
-    () =>
-      sailingTimes.map((st) => ({
-        ...st,
-        km: segmentBetween(sorted, st.start_stop_id, st.end_stop_id).km,
-      })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sailingTimes, stops]
-  );
-
   const currentTripSailingTimes = useMemo(
     () => sailingTimes.filter((st) => st.trip_id === trip?.id),
     [sailingTimes, trip?.id]
-  );
-  const currentTripWithDistance = useMemo(
-    () => withDistance.filter((st) => st.trip_id === trip?.id),
-    [withDistance, trip?.id]
   );
   const hasCurrentTripData = currentTripSailingTimes.length > 0;
 
@@ -85,49 +68,52 @@ export default function StatisticsPage() {
     [stops, currentTripSailingTimes]
   );
 
-  function modelFrom(
-    list: typeof withDistance,
-    field: 'sailing_time_hours' | 'total_time_hours'
-  ): PaceModel | null {
+  // Én linje pr. sejldag i stedet for én pr. registrering: flere loggere af
+  // samme dag samles, og etaper logget hver for sig lægges sammen.
+  //
+  // Modellerne fittes på DISSE og ikke på de rå registreringer. Logger tre
+  // personer den samme dag, er det stadig én observation af, hvor lang tid en
+  // dag på åen tager — ikke tre. Talte man dem hver for sig, ville n blive
+  // kunstigt oppustet, σ̂ for lille, og prædiktionsintervallerne for smalle.
+  const historicalDays = useMemo(() => groupSailingDays(stops, sailingTimes), [stops, sailingTimes]);
+  const currentTripDays = useMemo(
+    () => groupSailingDays(stops, currentTripSailingTimes),
+    [stops, currentTripSailingTimes]
+  );
+
+  function modelFrom(days: SailingDay[], field: 'sailingHours' | 'totalHours'): PaceModel | null {
     return fitPaceModel(
-      list.map((st) => {
-        const course = courseFor(st.start_stop_id, st.end_stop_id);
+      days.map((dag) => {
+        const course = courseFor(dag.startStopId, dag.endStopId);
         const effect =
-          course && st.wind_speed_ms != null && st.wind_dir_degrees != null
-            ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
+          course && dag.windSpeedMs != null && dag.windDirDegrees != null
+            ? windEffect(course, dag.windSpeedMs, dag.windDirDegrees)
             : null;
         return {
-          distanceKm: st.km,
-          hours: st[field],
-          flowRatio: st.flow_ratio ?? null,
+          distanceKm: dag.km,
+          hours: dag[field],
+          flowRatio: dag.flowRatio,
           tailwindMs: effect?.tailwindMs ?? null,
         };
       })
     );
   }
 
-  const historicalModel = useMemo(() => modelFrom(withDistance, 'sailing_time_hours'), [withDistance]);
-  const historicalPauseModel = useMemo(() => modelFrom(withDistance, 'total_time_hours'), [withDistance]);
-  const currentModel = useMemo(
-    () => modelFrom(currentTripWithDistance, 'sailing_time_hours'),
-    [currentTripWithDistance]
-  );
-  const currentPauseModel = useMemo(
-    () => modelFrom(currentTripWithDistance, 'total_time_hours'),
-    [currentTripWithDistance]
-  );
+  const historicalModel = useMemo(() => modelFrom(historicalDays, 'sailingHours'), [historicalDays]);
+  const historicalPauseModel = useMemo(() => modelFrom(historicalDays, 'totalHours'), [historicalDays]);
+  const currentModel = useMemo(() => modelFrom(currentTripDays, 'sailingHours'), [currentTripDays]);
+  const currentPauseModel = useMemo(() => modelFrom(currentTripDays, 'totalHours'), [currentTripDays]);
 
-  // Referencedistance til prædiktionseksemplet. Bruger rejsens egne stræk,
+  // Referencedistance til prædiktionseksemplet. Bruger rejsens egne dage,
   // hvis der er logget nogen — så eksemplet rent faktisk siger noget om
   // netop denne tur, i stedet for at være et vilkårligt historisk gennemsnit.
-  // Falder tilbage til alle historiske stræk, hvis rejsen intet har endnu.
   const referenceKm = useMemo(() => {
-    const kilde = currentTripWithDistance.length > 0 ? currentTripWithDistance : withDistance;
-    const distances = kilde.map((st) => st.km).filter((km) => km > 0).sort((a, b) => a - b);
+    const kilde = currentTripDays.length > 0 ? currentTripDays : historicalDays;
+    const distances = kilde.map((d) => d.km).filter((km) => km > 0).sort((a, b) => a - b);
     if (distances.length === 0) return 0;
     const mid = Math.floor(distances.length / 2);
     return distances.length % 2 === 0 ? (distances[mid - 1] + distances[mid]) / 2 : distances[mid];
-  }, [currentTripWithDistance, withDistance]);
+  }, [currentTripDays, historicalDays]);
 
   const referencePrediction =
     historicalModel && referenceKm > 0 ? predictTime(historicalModel, referenceKm) : null;
@@ -163,12 +149,14 @@ export default function StatisticsPage() {
   }, [daySegments]);
   const topStop = stopUsage[0];
 
-  const fastestSegment = withDistance
-    .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
-    .sort((a, b) => b.km / b.sailing_time_hours - a.km / a.sailing_time_hours)[0];
-  const slowestSegment = withDistance
-    .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
-    .sort((a, b) => a.km / a.sailing_time_hours - b.km / b.sailing_time_hours)[0];
+  // Hurtigste og roligste dag — også her pr. sejldag, ikke pr. logning. Ellers
+  // ville en dag, som tre personer loggede, kunne fylde hele listen.
+  const fastestDay = [...historicalDays]
+    .filter((d) => d.km > 0 && d.sailingHours > 0)
+    .sort((a, b) => b.km / b.sailingHours - a.km / a.sailingHours)[0];
+  const slowestDay = [...historicalDays]
+    .filter((d) => d.km > 0 && d.sailingHours > 0)
+    .sort((a, b) => a.km / a.sailingHours - b.km / b.sailingHours)[0];
 
   const stopName = (id: string) => stops.find((s) => s.id === id)?.name ?? '?';
 
@@ -229,7 +217,15 @@ export default function StatisticsPage() {
                   : undefined
               }
             />
-            <StatCard label="Antal loggede sejldage" value={`${currentTripSailingTimes.length}`} />
+            <StatCard
+              label="Antal sejldage"
+              value={`${currentTripDays.length}`}
+              sub={
+                currentTripSailingTimes.length !== currentTripDays.length
+                  ? `${currentTripSailingTimes.length} logninger i alt`
+                  : undefined
+              }
+            />
           </div>
         ) : (
           <div className="card p-8 text-center text-river-400">
@@ -280,7 +276,15 @@ export default function StatisticsPage() {
             sub={topStop ? `Brugt som etape-endepunkt ${topStop[1]} gange` : undefined}
           />
           <StatCard label="Antal Gudenå-ture" value={`${gudenaaTrips.length}`} />
-          <StatCard label="Antal loggede sejldage" value={`${sailingTimes.length}`} />
+          <StatCard
+            label="Antal sejldage"
+            value={`${historicalDays.length}`}
+            sub={
+              sailingTimes.length !== historicalDays.length
+                ? `${sailingTimes.length} logninger i alt`
+                : undefined
+            }
+          />
         </div>
         <p className="mt-2 text-xs text-river-400">
           "Samlet sejllængde" og "Samlet tid" tæller hvert stræk på en rejse med én gang, selv hvis flere har
@@ -293,8 +297,8 @@ export default function StatisticsPage() {
         <div className="card p-5">
           <h3 className="mb-2 font-semibold text-river-800">Forhold pr. sejldag</h3>
           <p className="mb-3 text-sm text-river-500">
-            Hvor meget vand der var i åen, og hvordan vinden lå i forhold til sejlretningen — sammenholdt
-            med farten, så I selv kan se sammenhængen.
+            Én linje pr. sejldag. Har flere logget den samme dag, eller er dagen logget i etaper, er det
+            samlet til én. Vandføring og vind er sammenholdt med farten, så I selv kan se sammenhængen.
           </p>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[46rem] text-sm">
@@ -309,98 +313,105 @@ export default function StatisticsPage() {
                 </tr>
               </thead>
               <tbody>
-                {[...currentTripWithDistance]
-                  .sort((a, b) => a.sail_date.localeCompare(b.sail_date))
-                  .map((st) => {
-                    const speed =
-                      st.km > 0 && st.sailing_time_hours > 0 ? st.km / st.sailing_time_hours : null;
-                    const pct = st.flow_ratio != null ? (st.flow_ratio - 1) * 100 : null;
-                    const speedDiff =
-                      speed != null && historicalModel && historicalModel.meanSpeedKmH > 0
-                        ? ((speed - historicalModel.meanSpeedKmH) / historicalModel.meanSpeedKmH) * 100
-                        : null;
+                {currentTripDays.map((dag) => {
+                  const speed = dag.km > 0 && dag.sailingHours > 0 ? dag.km / dag.sailingHours : null;
+                  const pct = dag.flowRatio != null ? (dag.flowRatio - 1) * 100 : null;
+                  const speedDiff =
+                    speed != null && historicalModel && historicalModel.meanSpeedKmH > 0
+                      ? ((speed - historicalModel.meanSpeedKmH) / historicalModel.meanSpeedKmH) * 100
+                      : null;
 
-                    const course = courseFor(st.start_stop_id, st.end_stop_id);
-                    const effect =
-                      course && st.wind_speed_ms != null && st.wind_dir_degrees != null
-                        ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
-                        : null;
+                  const course = courseFor(dag.startStopId, dag.endStopId);
+                  const effect =
+                    course && dag.windSpeedMs != null && dag.windDirDegrees != null
+                      ? windEffect(course, dag.windSpeedMs, dag.windDirDegrees)
+                      : null;
 
-                    // To uafhængige forbehold: bugtede ruten sig meget, eller
-                    // drejede vinden rundt, er tallet mindre værd.
-                    const usikker =
-                      (course != null && course.coherence < 0.5) ||
-                      (st.wind_steadiness != null && st.wind_steadiness < 0.5);
+                  // To uafhængige forbehold: bugtede ruten sig meget, eller
+                  // drejede vinden rundt, er tallet mindre værd.
+                  const usikker =
+                    (course != null && course.coherence < 0.5) ||
+                    (dag.windSteadiness != null && dag.windSteadiness < 0.5);
 
-                    return (
-                      <tr key={st.id} className="border-b border-river-50 last:border-0">
-                        <td className="py-1.5 pr-3 text-river-600">{st.sail_date}</td>
-                        <td className="py-1.5 pr-3 text-river-600">
-                          {stopName(st.start_stop_id)} → {stopName(st.end_stop_id)}
-                        </td>
-                        <td className="py-1.5 pr-3">
-                          {pct != null ? (
-                            <span className={pct >= 0 ? 'text-river-700' : 'text-sand-600'}>
-                              {pct >= 0 ? '+' : ''}
-                              {pct.toFixed(0)}% ift. normalt
-                              {st.flow_source === 'nedstroems_tange' && (
-                                <span className="text-river-400"> (Ulstrup)</span>
-                              )}
-                              {st.flow_source === 'opstroems_tange' && (
-                                <span className="text-river-400"> (Åstedbro)</span>
-                              )}
+                  return (
+                    <tr key={dag.key} className="border-b border-river-50 last:border-0">
+                      <td className="py-1.5 pr-3 text-river-600">{dag.sailDate}</td>
+                      <td className="py-1.5 pr-3 text-river-600">
+                        {stopName(dag.startStopId)} → {stopName(dag.endStopId)}
+                        <span className="block text-xs text-river-400">
+                          {dag.km.toFixed(1)} km
+                          {dag.registrationCount > 1 && (
+                            <>
+                              {' · '}
+                              {dag.registrationCount} logninger
+                              {dag.loggerCount > 1 && ` fra ${dag.loggerCount} personer`}
+                            </>
+                          )}
+                        </span>
+                      </td>
+                      <td className="py-1.5 pr-3">
+                        {pct != null ? (
+                          <span className={pct >= 0 ? 'text-river-700' : 'text-sand-600'}>
+                            {pct >= 0 ? '+' : ''}
+                            {pct.toFixed(0)}% ift. normalt
+                            {dag.flowSource === 'nedstroems_tange' && (
+                              <span className="text-river-400"> (Ulstrup)</span>
+                            )}
+                            {dag.flowSource === 'opstroems_tange' && (
+                              <span className="text-river-400"> (Åstedbro)</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-river-400">ukendt</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3">
+                        {effect ? (
+                          <div className="flex items-center gap-2">
+                            <Arrow
+                              degrees={course?.bearingDegrees ?? 0}
+                              className="text-river-600"
+                              title={`Ruten gik mod ${compassFromDegrees(course?.bearingDegrees) ?? '?'}`}
+                            />
+                            <Arrow
+                              degrees={(dag.windDirDegrees ?? 0) + 180}
+                              className="text-sand-600"
+                              title={`Vinden kom fra ${compassFromDegrees(dag.windDirDegrees) ?? '?'}`}
+                            />
+                            <span
+                              className={usikker ? 'text-river-400' : 'text-river-700'}
+                              title={
+                                usikker
+                                  ? 'Ruten skiftede meget retning, eller vinden drejede i løbet af dagen. Tallet er derfor usikkert.'
+                                  : undefined
+                              }
+                            >
+                              {usikker && '~'}
+                              {describeWindEffect(effect)}
                             </span>
-                          ) : (
-                            <span className="text-river-400">ukendt</span>
-                          )}
-                        </td>
-                        <td className="py-1.5 pr-3">
-                          {effect ? (
-                            <div className="flex items-center gap-2">
-                              <Arrow
-                                degrees={course?.bearingDegrees ?? 0}
-                                className="text-river-600"
-                                title={`Ruten gik mod ${compassFromDegrees(course?.bearingDegrees) ?? '?'}`}
-                              />
-                              <Arrow
-                                degrees={(st.wind_dir_degrees ?? 0) + 180}
-                                className="text-sand-600"
-                                title={`Vinden kom fra ${compassFromDegrees(st.wind_dir_degrees) ?? '?'}`}
-                              />
-                              <span
-                                className={usikker ? 'text-river-400' : 'text-river-700'}
-                                title={
-                                  usikker
-                                    ? 'Ruten skiftede meget retning, eller vinden drejede i løbet af dagen. Tallet er derfor usikkert.'
-                                    : undefined
-                                }
-                              >
-                                {usikker && '~'}
-                                {describeWindEffect(effect)}
-                              </span>
-                            </div>
-                          ) : course && course.missingBearings > 0 ? (
-                            <span className="text-river-400">retning mangler</span>
-                          ) : (
-                            <span className="text-river-400">ukendt</span>
-                          )}
-                        </td>
-                        <td className="py-1.5 pr-3 text-river-600">
-                          {speed != null ? formatKmT(speed) : '–'}
-                        </td>
-                        <td className="py-1.5">
-                          {speedDiff != null ? (
-                            <span className={speedDiff >= 0 ? 'text-river-700' : 'text-sand-600'}>
-                              {speedDiff >= 0 ? '+' : ''}
-                              {speedDiff.toFixed(0)}%
-                            </span>
-                          ) : (
-                            <span className="text-river-400">–</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          </div>
+                        ) : course && course.missingBearings > 0 ? (
+                          <span className="text-river-400">retning mangler</span>
+                        ) : (
+                          <span className="text-river-400">ukendt</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3 text-river-600">
+                        {speed != null ? formatKmT(speed) : '–'}
+                      </td>
+                      <td className="py-1.5">
+                        {speedDiff != null ? (
+                          <span className={speedDiff >= 0 ? 'text-river-700' : 'text-sand-600'}>
+                            {speedDiff >= 0 ? '+' : ''}
+                            {speedDiff.toFixed(0)}%
+                          </span>
+                        ) : (
+                          <span className="text-river-400">–</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -429,7 +440,7 @@ export default function StatisticsPage() {
         </div>
       )}
 
-      {(longestDay || shortestDay || stopUsage.length > 0 || fastestSegment) && (
+      {(longestDay || shortestDay || stopUsage.length > 0 || fastestDay) && (
         <div className="card p-5">
           <h3 className="mb-2 font-semibold text-river-800">Highlights</h3>
           <div className="space-y-1 text-sm text-river-600">
@@ -445,16 +456,16 @@ export default function StatisticsPage() {
                 {shortestDay.km.toFixed(1)} km, {tripNameById[shortestDay.tripId] ?? '—'})
               </p>
             )}
-            {fastestSegment && (
+            {fastestDay && (
               <p>
-                Hurtigste log: {stopName(fastestSegment.start_stop_id)} → {stopName(fastestSegment.end_stop_id)}{' '}
-                ({formatKmT(fastestSegment.km / fastestSegment.sailing_time_hours)})
+                Hurtigste dag: {stopName(fastestDay.startStopId)} → {stopName(fastestDay.endStopId)} (
+                {formatKmT(fastestDay.km / fastestDay.sailingHours)}, {fastestDay.sailDate})
               </p>
             )}
-            {slowestSegment && (
+            {slowestDay && (
               <p>
-                Roligste log: {stopName(slowestSegment.start_stop_id)} → {stopName(slowestSegment.end_stop_id)}{' '}
-                ({formatKmT(slowestSegment.km / slowestSegment.sailing_time_hours)})
+                Roligste dag: {stopName(slowestDay.startStopId)} → {stopName(slowestDay.endStopId)} (
+                {formatKmT(slowestDay.km / slowestDay.sailingHours)}, {slowestDay.sailDate})
               </p>
             )}
           </div>
