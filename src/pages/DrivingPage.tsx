@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTrip } from '../context/TripContext';
 import { useAuth } from '../context/AuthContext';
+import { DatePicker } from '../components/DatePicker';
 import type { DrivingLog } from '../lib/types';
 
 export default function DrivingPage() {
@@ -154,13 +155,8 @@ export default function DrivingPage() {
             onChange={(e) => setEnergyAmount(e.target.value)}
             required
           />
-          <input type="date" className="input" value={logDate} onChange={(e) => setLogDate(e.target.value)} />
-          <textarea
-            className="input"
-            placeholder="Noter"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-          />
+          <DatePicker value={logDate} onChange={setLogDate} />
+          <textarea className="input" placeholder="Noter" value={notes} onChange={(e) => setNotes(e.target.value)} />
           <div className="flex gap-2">
             <button className="btn-primary">Gem</button>
             <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>

@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import TripsListPage from './pages/TripsListPage';
 import ArchivedTripsPage from './pages/ArchivedTripsPage';
 import TripCreatePage from './pages/TripCreatePage';
+import UserPage from './pages/UserPage';
 import TripLayout from './pages/TripLayout';
 import TripOverviewPage from './pages/TripOverviewPage';
 import PackingListPage from './pages/PackingListPage';
@@ -15,6 +16,7 @@ import DrivingPage from './pages/DrivingPage';
 import AdminLayout from './pages/admin/AdminLayout';
 import AdminGeneralPage from './pages/admin/AdminGeneralPage';
 import AdminDesignPage from './pages/admin/AdminDesignPage';
+import AdminExpenseCategoriesPage from './pages/admin/AdminExpenseCategoriesPage';
 import AdminGudenaaPage from './pages/admin/AdminGudenaaPage';
 import RoutePlannerPage from './pages/gudenaa/RoutePlannerPage';
 import StatisticsPage from './pages/gudenaa/StatisticsPage';
@@ -65,6 +67,16 @@ export default function App() {
         }
       />
       <Route
+        path="/profil"
+        element={
+          <ProtectedRoute>
+            <Shell>
+              <UserPage />
+            </Shell>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/admin"
         element={
           <ProtectedRoute>
@@ -79,6 +91,7 @@ export default function App() {
         <Route index element={<Navigate to="generelt" replace />} />
         <Route path="generelt" element={<AdminGeneralPage />} />
         <Route path="design" element={<AdminDesignPage />} />
+        <Route path="regnskab" element={<AdminExpenseCategoriesPage />} />
         <Route path="gudenaaen" element={<AdminGudenaaPage />} />
       </Route>
 

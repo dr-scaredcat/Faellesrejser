@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTrip } from '../context/TripContext';
+import { DateTimePicker } from '../components/DateTimePicker';
 import type { ItineraryItem } from '../lib/types';
 
 const emptyForm = {
@@ -112,24 +113,17 @@ export default function ItineraryPage() {
             value={form.address}
             onChange={(e) => setForm({ ...form, address: e.target.value })}
           />
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label className="label">Starttidspunkt</label>
-              <input
-                type="datetime-local"
-                className="input"
+              <DateTimePicker
                 value={form.starts_at}
-                onChange={(e) => setForm({ ...form, starts_at: e.target.value })}
+                onChange={(v) => setForm({ ...form, starts_at: v })}
               />
             </div>
             <div>
               <label className="label">Sluttidspunkt</label>
-              <input
-                type="datetime-local"
-                className="input"
-                value={form.ends_at}
-                onChange={(e) => setForm({ ...form, ends_at: e.target.value })}
-              />
+              <DateTimePicker value={form.ends_at} onChange={(v) => setForm({ ...form, ends_at: v })} />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -156,7 +150,7 @@ export default function ItineraryPage() {
           />
           <textarea
             className="input"
-            placeholder="Yderligere info"
+            placeholder="Info/noter"
             value={form.info}
             onChange={(e) => setForm({ ...form, info: e.target.value })}
           />

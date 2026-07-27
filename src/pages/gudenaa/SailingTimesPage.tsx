@@ -4,6 +4,7 @@ import { useTrip } from '../../context/TripContext';
 import { useAuth } from '../../context/AuthContext';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { sortStops } from '../../lib/gudenaa';
+import { DatePicker } from '../../components/DatePicker';
 import type { SailingTime } from '../../lib/types';
 
 export default function SailingTimesPage() {
@@ -142,7 +143,7 @@ export default function SailingTimesPage() {
               />
             </div>
           </div>
-          <input type="date" className="input" value={sailDate} onChange={(e) => setSailDate(e.target.value)} />
+          <DatePicker value={sailDate} onChange={setSailDate} />
           <div className="flex gap-2">
             <button className="btn-primary">Gem</button>
             <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>

@@ -23,7 +23,9 @@ export function NavBar() {
               Admin
             </Link>
           )}
-          <span className="hidden text-river-200 sm:inline">{profile?.name}</span>
+          <Link to="/profil" className="hidden text-river-200 hover:text-sand-200 sm:inline">
+            {profile?.name}
+          </Link>
           <button
             className="rounded-lg bg-river-600 px-3 py-1.5 hover:bg-river-500"
             onClick={async () => {
