@@ -21,6 +21,15 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 const FALLBACK_PALETTE = ['#4d968f', '#b6862f', '#79b2ac', '#c99e4a', '#d7b671', '#a7cdca'];
 
+// Standarddato for en ny udgift: rejsens første dag, medmindre dags dato er
+// senere (så man under selve rejsen ikke behøver ændre datoen for hver ny
+// udgift man lægger ind løbende).
+function defaultExpenseDate(tripStartDate: string | null): string {
+  const today = new Date().toISOString().slice(0, 10);
+  if (!tripStartDate) return today;
+  return tripStartDate > today ? tripStartDate : today;
+}
+
 export default function ExpensesPage() {
   const { trip, members, pairs, namesById, isEditable } = useTrip();
   const { profile } = useAuth();
@@ -56,10 +65,10 @@ export default function ExpensesPage() {
     setSelectedParticipants(members.map((m) => m.user_id));
   }, [profile, members.length]);
 
-  // Standarddato for en ny udgift er rejsens første dag, ikke dags dato —
-  // man logger ofte udgifter efter turen, ikke live undervejs.
+  // Standarddato for en ny udgift: rejsens første dag, eller dags dato hvis
+  // den er senere (dvs. man er allerede i gang med rejsen).
   useEffect(() => {
-    setDate(trip?.start_date ?? new Date().toISOString().slice(0, 10));
+    setDate(defaultExpenseDate(trip?.start_date ?? null));
   }, [trip?.start_date]);
 
   async function loadCategories() {
@@ -119,6 +128,7 @@ export default function ExpensesPage() {
 
     setDescription('');
     setAmount('');
+    setDate(defaultExpenseDate(trip?.start_date ?? null));
     setShowForm(false);
     load();
   }
