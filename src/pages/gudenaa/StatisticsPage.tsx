@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { segmentBetween, sortStops } from '../../lib/gudenaa';
+import { computeDedupedTotals } from '../../lib/gudenaaStats';
 import { confidenceInterval95, formatHours, formatKmT } from '../../lib/stats';
 import type { SailingTime, Trip } from '../../lib/types';
 
@@ -28,6 +29,10 @@ export default function StatisticsPage() {
 
   const sorted = sortStops(stops);
 
+  // Rå per-registrering-data. Bruges til gennemsnitsfart og highlights — her
+  // skal HVER registrering tælle for sig, uanset om flere har logget samme
+  // (eller overlappende) stræk, da det er variationen i data der fortæller
+  // noget om vores fart.
   const withDistance = useMemo(
     () =>
       sailingTimes.map((st) => ({
@@ -37,9 +42,12 @@ export default function StatisticsPage() {
     [sailingTimes, stops]
   );
 
-  const totalKm = withDistance.reduce((s, st) => s + st.km, 0);
-  const totalSailingHours = withDistance.reduce((s, st) => s + st.sailing_time_hours, 0);
-  const totalWithPauseHours = withDistance.reduce((s, st) => s + st.total_time_hours, 0);
+  // Afdupliserede totaler til "Samlet sejllængde"/"Samlet sejltid" —
+  // se lib/gudenaaStats.ts for forklaring af metoden.
+  const { totalKm, totalSailingHours, totalWithPauseHours } = useMemo(
+    () => computeDedupedTotals(stops, sailingTimes),
+    [stops, sailingTimes]
+  );
 
   const speeds = withDistance
     .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
@@ -68,11 +76,16 @@ export default function StatisticsPage() {
         <StatCard
           label="Gennemsnitshastighed"
           value={speeds.length > 0 ? formatKmT(speedCI.mean) : '–'}
-          sub={
-            speedCI.n >= 2 ? `95% CI: [${formatKmT(speedCI.low)} : ${formatKmT(speedCI.high)}]` : undefined
-          }
+          sub={speedCI.n >= 2 ? `95% CI: [${formatKmT(speedCI.low)} : ${formatKmT(speedCI.high)}]` : undefined}
         />
       </div>
+
+      <p className="text-xs text-river-400">
+        "Samlet sejllængde" og "Samlet tid" tæller hvert stræk på en rejse med én gang, selv hvis flere har
+        logget samme (eller overlappende) stræk — i så fald bruges gennemsnittet af de loggede tider.
+        Gennemsnitshastigheden ovenfor bruger derimod alle {sailingTimes.length} loggede registreringer hver for
+        sig.
+      </p>
 
       {fastestSegment && (
         <div className="card p-5">
