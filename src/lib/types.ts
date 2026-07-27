@@ -136,6 +136,11 @@ export interface GudenaaStop {
   sort_order: number;
   distance_from_previous_km: number;
   sail_time_hours: number;
+  /**
+   * Samlet retning for strækket fra forrige stop til dette, i grader med uret
+   * fra nord. Null hvis den ikke er angivet endnu.
+   */
+  bearing_degrees: number | null;
   description: string | null;
   tags?: string[];
 }
