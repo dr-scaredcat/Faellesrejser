@@ -38,6 +38,14 @@ export default function ExpensesPage() {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [selectedParticipants, setSelectedParticipants] = useState<string[]>([]);
 
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  const [editDescription, setEditDescription] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editAmount, setEditAmount] = useState('');
+  const [editPaidBy, setEditPaidBy] = useState('');
+  const [editDate, setEditDate] = useState('');
+  const [editParticipants, setEditParticipants] = useState<string[]>([]);
+
   useEffect(() => {
     if (trip) load();
     loadCategories();
@@ -106,6 +114,42 @@ export default function ExpensesPage() {
     setDescription('');
     setAmount('');
     setShowForm(false);
+    load();
+  }
+
+  function startEditing(exp: Expense) {
+    setEditingExpenseId(exp.id);
+    setEditDescription(exp.description);
+    setEditCategory(exp.category);
+    setEditAmount(String(exp.amount));
+    setEditPaidBy(exp.paid_by);
+    setEditDate(exp.expense_date);
+    setEditParticipants(participantsByExpense[exp.id] ?? []);
+  }
+
+  async function handleUpdate(e: FormEvent) {
+    e.preventDefault();
+    if (!editingExpenseId || !editAmount || !editPaidBy || !editCategory) return;
+
+    await supabase
+      .from('expenses')
+      .update({
+        description: editDescription,
+        category: editCategory,
+        amount: Number(editAmount),
+        paid_by: editPaidBy,
+        expense_date: editDate,
+      })
+      .eq('id', editingExpenseId);
+
+    await supabase.from('expense_participants').delete().eq('expense_id', editingExpenseId);
+    if (editParticipants.length > 0) {
+      await supabase.from('expense_participants').insert(
+        editParticipants.map((uid) => ({ expense_id: editingExpenseId, user_id: uid }))
+      );
+    }
+
+    setEditingExpenseId(null);
     load();
   }
 
@@ -305,28 +349,115 @@ export default function ExpensesPage() {
       <div className="space-y-3">
         {expenses.map((exp) => (
           <div key={exp.id} className={`card p-4 ${exp.is_settled ? 'opacity-60' : ''}`}>
-            <div className="flex items-start justify-between">
-              <div>
-                <p className="font-medium text-river-800">
-                  {exp.description || exp.category}{' '}
-                  <span className="text-xs font-normal text-river-400">({exp.category})</span>
-                </p>
-                <p className="text-sm text-river-500">
-                  {exp.amount} kr. · lagt ud af {namesById[exp.paid_by] ?? '?'} · {exp.expense_date}
-                </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <label className="flex items-center gap-1 text-xs text-river-500">
-                  <input type="checkbox" checked={exp.is_settled} onChange={() => toggleSettled(exp)} />
-                  Afregnet
-                </label>
-                {isEditable && (
-                  <button className="text-xs text-red-500 hover:underline" onClick={() => handleDelete(exp.id)}>
-                    Slet
+            {editingExpenseId === exp.id ? (
+              <form onSubmit={handleUpdate} className="space-y-3">
+                <input
+                  className="input"
+                  placeholder="Beskrivelse"
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <select
+                    className="input"
+                    value={editCategory}
+                    onChange={(e) => setEditCategory(e.target.value)}
+                  >
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.name}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="input"
+                    placeholder="Beløb (kr.)"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <select
+                    className="input"
+                    value={editPaidBy}
+                    onChange={(e) => setEditPaidBy(e.target.value)}
+                  >
+                    {members.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {namesById[m.user_id]}
+                      </option>
+                    ))}
+                  </select>
+                  <DatePicker value={editDate} onChange={setEditDate} />
+                </div>
+                <div>
+                  <label className="label">Deles mellem</label>
+                  <div className="flex flex-wrap gap-3 text-sm">
+                    {members.map((m) => (
+                      <label key={m.user_id} className="flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={editParticipants.includes(m.user_id)}
+                          onChange={(e) =>
+                            setEditParticipants((prev) =>
+                              e.target.checked ? [...prev, m.user_id] : prev.filter((id) => id !== m.user_id)
+                            )
+                          }
+                        />
+                        {namesById[m.user_id]}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button className="btn-primary">Gem</button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setEditingExpenseId(null)}
+                  >
+                    Annuller
                   </button>
-                )}
+                </div>
+              </form>
+            ) : (
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="font-medium text-river-800">
+                    {exp.description || exp.category}{' '}
+                    <span className="text-xs font-normal text-river-400">({exp.category})</span>
+                  </p>
+                  <p className="text-sm text-river-500">
+                    {exp.amount} kr. · lagt ud af {namesById[exp.paid_by] ?? '?'} · {exp.expense_date}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-1 text-xs text-river-500">
+                    <input type="checkbox" checked={exp.is_settled} onChange={() => toggleSettled(exp)} />
+                    Afregnet
+                  </label>
+                  {isEditable && (
+                    <>
+                      <button
+                        className="text-xs text-river-500 hover:underline"
+                        onClick={() => startEditing(exp)}
+                      >
+                        Rediger
+                      </button>
+                      <button
+                        className="text-xs text-red-500 hover:underline"
+                        onClick={() => handleDelete(exp.id)}
+                      >
+                        Slet
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         ))}
       </div>
