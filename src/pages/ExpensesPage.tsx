@@ -2,7 +2,8 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTrip } from '../context/TripContext';
 import { useAuth } from '../context/AuthContext';
-import { EXPENSE_CATEGORIES, type Expense } from '../lib/types';
+import { DatePicker } from '../components/DatePicker';
+import type { Expense, ExpenseCategory } from '../lib/types';
 import {
   balancesFromIndividuals,
   computeNetBalances,
@@ -18,17 +19,20 @@ const CATEGORY_COLORS: Record<string, string> = {
   Sjov: '#d7b671',
   Diverse: '#a7cdca',
 };
+const FALLBACK_PALETTE = ['#4d968f', '#b6862f', '#79b2ac', '#c99e4a', '#d7b671', '#a7cdca'];
 
 export default function ExpensesPage() {
   const { trip, members, pairs, namesById, isEditable } = useTrip();
   const { profile } = useAuth();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [participantsByExpense, setParticipantsByExpense] = useState<Record<string, string[]>>({});
+  const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [groupByPair, setGroupByPair] = useState(true);
+  const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
 
   const [description, setDescription] = useState('');
-  const [category, setCategory] = useState<string>(EXPENSE_CATEGORIES[0]);
+  const [category, setCategory] = useState<string>('');
   const [amount, setAmount] = useState('');
   const [paidBy, setPaidBy] = useState('');
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -36,12 +40,20 @@ export default function ExpensesPage() {
 
   useEffect(() => {
     if (trip) load();
+    loadCategories();
   }, [trip?.id]);
 
   useEffect(() => {
     if (profile) setPaidBy(profile.id);
     setSelectedParticipants(members.map((m) => m.user_id));
   }, [profile, members.length]);
+
+  async function loadCategories() {
+    const { data } = await supabase.from('expense_categories').select('*').order('sort_order');
+    const list = (data as ExpenseCategory[]) ?? [];
+    setCategories(list);
+    setCategory((prev) => prev || list[0]?.name || '');
+  }
 
   async function load() {
     if (!trip) return;
@@ -70,7 +82,7 @@ export default function ExpensesPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!trip || !amount || !paidBy) return;
+    if (!trip || !amount || !paidBy || !category) return;
 
     const { data: expense, error } = await supabase
       .from('expenses')
@@ -120,6 +132,19 @@ export default function ExpensesPage() {
     return Object.entries(map).sort((a, b) => b[1] - a[1]);
   }, [expenses]);
 
+  const expensesByCategory = useMemo(() => {
+    const map: Record<string, Expense[]> = {};
+    for (const e of expenses) {
+      map[e.category] = map[e.category] ?? [];
+      map[e.category].push(e);
+    }
+    return map;
+  }, [expenses]);
+
+  function colorForCategory(cat: string, index: number) {
+    return CATEGORY_COLORS[cat] ?? FALLBACK_PALETTE[index % FALLBACK_PALETTE.length];
+  }
+
   const balances = useMemo(() => computeNetBalances(enrichedExpenses, namesById), [enrichedExpenses, namesById]);
   const displayBalances = groupByPair
     ? groupBalancesByPair(balances, pairs, namesById)
@@ -128,24 +153,118 @@ export default function ExpensesPage() {
 
   return (
     <div className="space-y-6">
+      {isEditable && !showForm && (
+        <button className="btn-primary" onClick={() => setShowForm(true)}>
+          + Tilføj udgift
+        </button>
+      )}
+
+      {isEditable && showForm && (
+        <form onSubmit={handleSubmit} className="card space-y-3 p-5">
+          <input
+            className="input"
+            placeholder="Beskrivelse"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <div className="grid grid-cols-2 gap-3">
+            <select className="input" value={category} onChange={(e) => setCategory(e.target.value)}>
+              {categories.map((c) => (
+                <option key={c.id} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+            <input
+              type="number"
+              step="0.01"
+              className="input"
+              placeholder="Beløb (kr.)"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              required
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <select className="input" value={paidBy} onChange={(e) => setPaidBy(e.target.value)}>
+              {members.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {namesById[m.user_id]}
+                </option>
+              ))}
+            </select>
+            <DatePicker value={date} onChange={setDate} />
+          </div>
+          <div>
+            <label className="label">Deles mellem</label>
+            <div className="flex flex-wrap gap-3 text-sm">
+              {members.map((m) => (
+                <label key={m.user_id} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedParticipants.includes(m.user_id)}
+                    onChange={(e) =>
+                      setSelectedParticipants((prev) =>
+                        e.target.checked ? [...prev, m.user_id] : prev.filter((id) => id !== m.user_id)
+                      )
+                    }
+                  />
+                  {namesById[m.user_id]}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button className="btn-primary">Gem</button>
+            <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
+              Annuller
+            </button>
+          </div>
+        </form>
+      )}
+
       <div className="card p-5">
         <h2 className="mb-3 font-semibold text-river-800">Samlet forbrug: {totalAll.toFixed(2)} kr.</h2>
-        <div className="space-y-2">
-          {byCategory.map(([cat, sum]) => (
-            <div key={cat} className="flex items-center gap-3 text-sm">
-              <span className="w-24 shrink-0 text-river-600">{cat}</span>
-              <div className="h-3 flex-1 rounded-full bg-river-50">
-                <div
-                  className="h-3 rounded-full"
-                  style={{
-                    width: totalAll ? `${(sum / totalAll) * 100}%` : '0%',
-                    backgroundColor: CATEGORY_COLORS[cat] ?? '#79b2ac',
-                  }}
-                />
+        <div className="space-y-1">
+          {byCategory.map(([cat, sum], i) => {
+            const isOpen = expandedCategory === cat;
+            return (
+              <div key={cat}>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-3 py-1.5 text-left text-sm"
+                  onClick={() => setExpandedCategory(isOpen ? null : cat)}
+                >
+                  <span className="w-24 shrink-0 text-river-600">{cat}</span>
+                  <div className="h-3 flex-1 rounded-full bg-river-50">
+                    <div
+                      className="h-3 rounded-full"
+                      style={{
+                        width: totalAll ? `${(sum / totalAll) * 100}%` : '0%',
+                        backgroundColor: colorForCategory(cat, i),
+                      }}
+                    />
+                  </div>
+                  <span className="w-20 shrink-0 text-right text-river-500">{sum.toFixed(0)} kr.</span>
+                  <span className="w-3 shrink-0 text-center text-xs text-river-400">{isOpen ? '▲' : '▼'}</span>
+                </button>
+                {isOpen && (
+                  <ul className="mb-2 ml-2 space-y-1 border-l border-river-100 py-1 pl-4 text-xs text-river-500">
+                    {(expensesByCategory[cat] ?? []).map((exp) => (
+                      <li key={exp.id} className="flex items-center justify-between gap-3">
+                        <span>
+                          {exp.description || cat} · {namesById[exp.paid_by] ?? '?'}
+                        </span>
+                        <span className="shrink-0">
+                          {Number(exp.amount).toFixed(2)} kr. · {exp.expense_date}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              <span className="w-20 shrink-0 text-right text-river-500">{sum.toFixed(0)} kr.</span>
-            </div>
-          ))}
+            );
+          })}
           {byCategory.length === 0 && <p className="text-sm text-river-400">Ingen udgifter registreret endnu.</p>}
         </div>
       </div>
@@ -211,76 +330,6 @@ export default function ExpensesPage() {
           </div>
         ))}
       </div>
-
-      {isEditable && !showForm && (
-        <button className="btn-primary" onClick={() => setShowForm(true)}>
-          + Tilføj udgift
-        </button>
-      )}
-
-      {isEditable && showForm && (
-        <form onSubmit={handleSubmit} className="card space-y-3 p-5">
-          <input
-            className="input"
-            placeholder="Beskrivelse"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <div className="grid grid-cols-2 gap-3">
-            <select className="input" value={category} onChange={(e) => setCategory(e.target.value)}>
-              {EXPENSE_CATEGORIES.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              step="0.01"
-              className="input"
-              placeholder="Beløb (kr.)"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              required
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <select className="input" value={paidBy} onChange={(e) => setPaidBy(e.target.value)}>
-              {members.map((m) => (
-                <option key={m.user_id} value={m.user_id}>
-                  {namesById[m.user_id]}
-                </option>
-              ))}
-            </select>
-            <input type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">Deles mellem</label>
-            <div className="flex flex-wrap gap-3 text-sm">
-              {members.map((m) => (
-                <label key={m.user_id} className="flex items-center gap-1">
-                  <input
-                    type="checkbox"
-                    checked={selectedParticipants.includes(m.user_id)}
-                    onChange={(e) =>
-                      setSelectedParticipants((prev) =>
-                        e.target.checked ? [...prev, m.user_id] : prev.filter((id) => id !== m.user_id)
-                      )
-                    }
-                  />
-                  {namesById[m.user_id]}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <button className="btn-primary">Gem</button>
-            <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
-              Annuller
-            </button>
-          </div>
-        </form>
-      )}
     </div>
   );
 }
