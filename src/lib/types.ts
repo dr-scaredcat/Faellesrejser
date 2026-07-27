@@ -82,6 +82,12 @@ export interface Expense {
   amount: number;
   paid_by: string;
   expense_date: string;
+  /**
+   * Posten er gjort op uden om det løbende regnskab — typisk fordi alle har
+   * overført deres andel direkte til den, der lagde ud (fx selve rejsen,
+   * betalt inden afrejse). Beløbet tæller stadig med i det samlede forbrug,
+   * men indgår slet ikke i "hvem skylder hvem".
+   */
   is_settled: boolean;
   paid_by_profile?: Profile;
   participant_ids?: string[];
@@ -91,6 +97,23 @@ export interface ExpenseCategory {
   id: string;
   name: string;
   sort_order: number;
+  created_at: string;
+}
+
+/**
+ * En faktisk overførsel mellem to personer på en rejse — fx når man krydser
+ * en linje af under "hvem skylder hvem". Registreres altid person-til-person,
+ * også når regnskabet vises pr. par, for det er personer der sender penge.
+ */
+export interface Settlement {
+  id: string;
+  trip_id: string;
+  from_user_id: string;
+  to_user_id: string;
+  amount: number;
+  settled_on: string;
+  note: string | null;
+  created_by: string;
   created_at: string;
 }
 

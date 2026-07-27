@@ -1,4 +1,4 @@
-import type { Expense, TripPair } from './types';
+import type { Expense, Settlement, TripPair } from './types';
 
 export interface Balance {
   id: string; // user_id eller "pair:<pairId>"
@@ -14,27 +14,47 @@ export interface Transfer {
   amount: number;
 }
 
+const EPSILON = 0.01;
+
 /**
- * Beregner nettosaldo pr. person ud fra ikke-afregnede udgifter.
- * Udgiften deles ligeligt mellem deltagerne (participant_ids).
+ * Beregner nettosaldo pr. person.
+ *
+ * Der er to måder at gøre en post op på, og de gør hver sit:
+ *
+ *  - `expense.is_settled` betyder, at hele posten er afregnet uden om det
+ *    løbende regnskab — fx rejsen selv, som én betaler, og som alle overfører
+ *    deres andel af inden afrejse. Posten springes helt over her, men tæller
+ *    stadig med i det samlede forbrug ude i UI'et.
+ *
+ *  - `settlements` er faktiske overførsler mellem to personer, typisk fordi
+ *    nogen har krydset en linje af under "hvem skylder hvem". De trækkes fra
+ *    saldiene, så kun restgælden står tilbage.
  */
 export function computeNetBalances(
   expenses: Expense[],
+  settlements: Settlement[],
   namesById: Record<string, string>
 ): Record<string, number> {
   const balances: Record<string, number> = {};
 
   for (const exp of expenses) {
     if (exp.is_settled) continue;
-    const participants = exp.participant_ids && exp.participant_ids.length > 0
-      ? exp.participant_ids
-      : [exp.paid_by];
-    const share = exp.amount / participants.length;
+    const participants =
+      exp.participant_ids && exp.participant_ids.length > 0 ? exp.participant_ids : [exp.paid_by];
+    const share = Number(exp.amount) / participants.length;
 
-    balances[exp.paid_by] = (balances[exp.paid_by] ?? 0) + exp.amount;
+    balances[exp.paid_by] = (balances[exp.paid_by] ?? 0) + Number(exp.amount);
     for (const uid of participants) {
       balances[uid] = (balances[uid] ?? 0) - share;
     }
+  }
+
+  // En overførsel fra A til B bringer A's gæld op mod nul og B's tilgodehavende
+  // ned mod nul.
+  for (const s of settlements) {
+    const amount = Number(s.amount);
+    balances[s.from_user_id] = (balances[s.from_user_id] ?? 0) + amount;
+    balances[s.to_user_id] = (balances[s.to_user_id] ?? 0) - amount;
   }
 
   // Sørg for at alle kendte navne indgår, selv med saldo 0.
@@ -93,7 +113,6 @@ export function balancesFromIndividuals(
  * indtil alle saldi er ~0. Giver et minimalt sæt overførsler.
  */
 export function simplifyDebts(balances: Balance[]): Transfer[] {
-  const EPSILON = 0.01;
   const debtors = balances
     .filter((b) => b.amount < -EPSILON)
     .map((b) => ({ ...b }))
@@ -130,4 +149,39 @@ export function simplifyDebts(balances: Balance[]): Transfer[] {
   }
 
   return transfers;
+}
+
+/**
+ * En saldo-id kan enten være en person eller et par. Denne oversætter den til
+ * de personer, den dækker over.
+ *
+ * Bruges når en linje under "hvem skylder hvem" krydses af: selv i par-visning
+ * er det to konkrete personer, der sender penge til hinanden, og det er dem,
+ * afregningen skal registreres på. Ellers ville person-visningen og
+ * par-visningen ikke stemme overens bagefter.
+ */
+export function partyMembers(balanceId: string, pairs: TripPair[]): string[] {
+  if (!balanceId.startsWith('pair:')) return [balanceId];
+  const pair = pairs.find((p) => `pair:${p.id}` === balanceId);
+  if (!pair) return [];
+  return [pair.member1_id, pair.member2_id].filter((id): id is string => !!id);
+}
+
+/**
+ * Foreslår hvilke to personer en overførsel skal registreres på. Ved par
+ * vælges det første medlem som standard — brugeren kan ændre det i UI'et.
+ */
+export function defaultSettlementParties(
+  transfer: Transfer,
+  pairs: TripPair[]
+): { fromUserId: string | null; toUserId: string | null } {
+  return {
+    fromUserId: partyMembers(transfer.fromId, pairs)[0] ?? null,
+    toUserId: partyMembers(transfer.toId, pairs)[0] ?? null,
+  };
+}
+
+/** Samlet beløb der er overført mellem deltagerne på rejsen. */
+export function totalSettled(settlements: Settlement[]): number {
+  return settlements.reduce((sum, s) => sum + Number(s.amount), 0);
 }

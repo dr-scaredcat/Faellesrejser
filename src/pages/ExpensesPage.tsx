@@ -2,13 +2,19 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTrip } from '../context/TripContext';
 import { useAuth } from '../context/AuthContext';
+import { useMutate } from '../hooks/useMutate';
 import { DatePicker } from '../components/DatePicker';
-import type { Expense, ExpenseCategory } from '../lib/types';
+import { formatCurrency, formatDate } from '../lib/format';
+import type { Expense, ExpenseCategory, Settlement } from '../lib/types';
 import {
   balancesFromIndividuals,
   computeNetBalances,
+  defaultSettlementParties,
   groupBalancesByPair,
+  partyMembers,
   simplifyDebts,
+  totalSettled,
+  type Transfer,
 } from '../lib/settlement';
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -21,11 +27,23 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 const FALLBACK_PALETTE = ['#4d968f', '#b6862f', '#79b2ac', '#c99e4a', '#d7b671', '#a7cdca'];
 
+// Standarddato for en ny udgift: rejsens første dag, medmindre dags dato er
+// senere (så man under selve rejsen ikke behøver ændre datoen for hver ny
+// udgift man lægger ind løbende).
+function defaultExpenseDate(tripStartDate: string | null): string {
+  const today = new Date().toISOString().slice(0, 10);
+  if (!tripStartDate) return today;
+  return tripStartDate > today ? tripStartDate : today;
+}
+
 export default function ExpensesPage() {
   const { trip, members, pairs, namesById, isEditable } = useTrip();
   const { profile } = useAuth();
+  const mutate = useMutate();
+
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [participantsByExpense, setParticipantsByExpense] = useState<Record<string, string[]>>({});
+  const [settlements, setSettlements] = useState<Settlement[]>([]);
   const [categories, setCategories] = useState<ExpenseCategory[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [groupByPair, setGroupByPair] = useState(true);
@@ -46,20 +64,30 @@ export default function ExpensesPage() {
   const [editDate, setEditDate] = useState('');
   const [editParticipants, setEditParticipants] = useState<string[]>([]);
 
+  // Registrering af en betaling ud fra en linje under "hvem skylder hvem".
+  const [settlingKey, setSettlingKey] = useState<string | null>(null);
+  const [settleFrom, setSettleFrom] = useState('');
+  const [settleTo, setSettleTo] = useState('');
+  const [settleAmount, setSettleAmount] = useState('');
+  const [settleDate, setSettleDate] = useState(new Date().toISOString().slice(0, 10));
+  const [settleNote, setSettleNote] = useState('');
+
   useEffect(() => {
     if (trip) load();
     loadCategories();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip?.id]);
 
   useEffect(() => {
     if (profile) setPaidBy(profile.id);
     setSelectedParticipants(members.map((m) => m.user_id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile, members.length]);
 
-  // Standarddato for en ny udgift er rejsens første dag, ikke dags dato —
-  // man logger ofte udgifter efter turen, ikke live undervejs.
+  // Standarddato for en ny udgift: rejsens første dag, eller dags dato hvis
+  // den er senere (dvs. man er allerede i gang med rejsen).
   useEffect(() => {
-    setDate(trip?.start_date ?? new Date().toISOString().slice(0, 10));
+    setDate(defaultExpenseDate(trip?.start_date ?? null));
   }, [trip?.start_date]);
 
   async function loadCategories() {
@@ -71,6 +99,7 @@ export default function ExpensesPage() {
 
   async function load() {
     if (!trip) return;
+
     const { data } = await supabase
       .from('expenses')
       .select('*, paid_by_profile:profiles!expenses_paid_by_fkey(*)')
@@ -92,33 +121,38 @@ export default function ExpensesPage() {
       map[p.expense_id].push(p.user_id);
     }
     setParticipantsByExpense(map);
+
+    const { data: settleData } = await supabase
+      .from('settlements')
+      .select('*')
+      .eq('trip_id', trip.id)
+      .order('settled_on', { ascending: false });
+    setSettlements((settleData as Settlement[]) ?? []);
   }
 
+  // Udgift og deltagere gemmes i ét kald (save_expense), så en udgift aldrig
+  // kan ende uden deltagere hvis det andet kald fejler undervejs.
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!trip || !amount || !paidBy || !category) return;
 
-    const { data: expense, error } = await supabase
-      .from('expenses')
-      .insert({
-        trip_id: trip.id,
-        description,
-        category,
-        amount: Number(amount),
-        paid_by: paidBy,
-        expense_date: date,
+    const { ok } = await mutate(
+      supabase.rpc('save_expense', {
+        _expense_id: null,
+        _trip_id: trip.id,
+        _description: description,
+        _category: category,
+        _amount: Number(amount),
+        _paid_by: paidBy,
+        _expense_date: date,
+        _participants: selectedParticipants,
       })
-      .select()
-      .single();
-
-    if (error || !expense) return;
-
-    await supabase.from('expense_participants').insert(
-      selectedParticipants.map((uid) => ({ expense_id: expense.id, user_id: uid }))
     );
+    if (!ok) return;
 
     setDescription('');
     setAmount('');
+    setDate(defaultExpenseDate(trip?.start_date ?? null));
     setShowForm(false);
     load();
   }
@@ -135,39 +169,37 @@ export default function ExpensesPage() {
 
   async function handleUpdate(e: FormEvent) {
     e.preventDefault();
-    if (!editingExpenseId || !editAmount || !editPaidBy || !editCategory) return;
+    if (!trip || !editingExpenseId || !editAmount || !editPaidBy || !editCategory) return;
 
-    await supabase
-      .from('expenses')
-      .update({
-        description: editDescription,
-        category: editCategory,
-        amount: Number(editAmount),
-        paid_by: editPaidBy,
-        expense_date: editDate,
+    const { ok } = await mutate(
+      supabase.rpc('save_expense', {
+        _expense_id: editingExpenseId,
+        _trip_id: trip.id,
+        _description: editDescription,
+        _category: editCategory,
+        _amount: Number(editAmount),
+        _paid_by: editPaidBy,
+        _expense_date: editDate,
+        _participants: editParticipants,
       })
-      .eq('id', editingExpenseId);
-
-    await supabase.from('expense_participants').delete().eq('expense_id', editingExpenseId);
-    if (editParticipants.length > 0) {
-      await supabase.from('expense_participants').insert(
-        editParticipants.map((uid) => ({ expense_id: editingExpenseId, user_id: uid }))
-      );
-    }
+    );
+    if (!ok) return;
 
     setEditingExpenseId(null);
     load();
   }
 
   async function toggleSettled(expense: Expense) {
-    await supabase.from('expenses').update({ is_settled: !expense.is_settled }).eq('id', expense.id);
-    load();
+    const { ok } = await mutate(
+      supabase.from('expenses').update({ is_settled: !expense.is_settled }).eq('id', expense.id)
+    );
+    if (ok) load();
   }
 
   async function handleDelete(id: string) {
     if (!confirm('Slet denne post?')) return;
-    await supabase.from('expenses').delete().eq('id', id);
-    load();
+    const { ok } = await mutate(supabase.from('expenses').delete().eq('id', id));
+    if (ok) load();
   }
 
   const enrichedExpenses = useMemo(
@@ -195,11 +227,60 @@ export default function ExpensesPage() {
     return CATEGORY_COLORS[cat] ?? FALLBACK_PALETTE[index % FALLBACK_PALETTE.length];
   }
 
-  const balances = useMemo(() => computeNetBalances(enrichedExpenses, namesById), [enrichedExpenses, namesById]);
+  const balances = useMemo(
+    () => computeNetBalances(enrichedExpenses, settlements, namesById),
+    [enrichedExpenses, settlements, namesById]
+  );
   const displayBalances = groupByPair
     ? groupBalancesByPair(balances, pairs, namesById)
     : balancesFromIndividuals(balances, namesById);
   const transfers = simplifyDebts(displayBalances);
+
+  // ---- Registrering af betalinger ------------------------------------------
+
+  function transferKey(t: Transfer) {
+    return `${t.fromId}->${t.toId}`;
+  }
+
+  function startSettling(t: Transfer) {
+    const { fromUserId, toUserId } = defaultSettlementParties(t, pairs);
+    setSettlingKey(transferKey(t));
+    setSettleFrom(fromUserId ?? '');
+    setSettleTo(toUserId ?? '');
+    setSettleAmount(String(t.amount));
+    setSettleDate(new Date().toISOString().slice(0, 10));
+    setSettleNote('');
+  }
+
+  async function handleSettle(e: FormEvent) {
+    e.preventDefault();
+    if (!trip || !profile || !settleFrom || !settleTo) return;
+
+    const { ok } = await mutate(
+      supabase.from('settlements').insert({
+        trip_id: trip.id,
+        from_user_id: settleFrom,
+        to_user_id: settleTo,
+        amount: Number(settleAmount),
+        settled_on: settleDate,
+        note: settleNote || null,
+        created_by: profile.id,
+      }),
+      { success: 'Betalingen er registreret.' }
+    );
+    if (!ok) return;
+
+    setSettlingKey(null);
+    load();
+  }
+
+  async function handleDeleteSettlement(id: string) {
+    if (!confirm('Fortryd denne betaling? Beløbet lægges tilbage i regnskabet.')) return;
+    const { ok } = await mutate(supabase.from('settlements').delete().eq('id', id));
+    if (ok) load();
+  }
+
+  const settledTotal = totalSettled(settlements);
 
   return (
     <div className="space-y-6">
@@ -229,7 +310,7 @@ export default function ExpensesPage() {
               type="number"
               step="0.01"
               className="input"
-              placeholder="Beløb (kr.)"
+              placeholder="Beløb"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               required
@@ -263,9 +344,14 @@ export default function ExpensesPage() {
                 </label>
               ))}
             </div>
+            {selectedParticipants.length === 0 && (
+              <p className="mt-1 text-xs text-red-600">Vælg mindst én person at dele udgiften med.</p>
+            )}
           </div>
           <div className="flex gap-2">
-            <button className="btn-primary">Gem</button>
+            <button className="btn-primary" disabled={selectedParticipants.length === 0}>
+              Gem
+            </button>
             <button type="button" className="btn-secondary" onClick={() => setShowForm(false)}>
               Annuller
             </button>
@@ -274,7 +360,7 @@ export default function ExpensesPage() {
       )}
 
       <div className="card p-5">
-        <h2 className="mb-3 font-semibold text-river-800">Samlet forbrug: {totalAll.toFixed(2)} kr.</h2>
+        <h2 className="mb-3 font-semibold text-river-800">Samlet forbrug: {formatCurrency(totalAll)}</h2>
         <div className="space-y-1">
           {byCategory.map(([cat, sum], i) => {
             const isOpen = expandedCategory === cat;
@@ -295,7 +381,7 @@ export default function ExpensesPage() {
                       }}
                     />
                   </div>
-                  <span className="w-20 shrink-0 text-right text-river-500">{sum.toFixed(0)} kr.</span>
+                  <span className="w-24 shrink-0 text-right text-river-500">{formatCurrency(sum)}</span>
                   <span className="w-3 shrink-0 text-center text-xs text-river-400">{isOpen ? '▲' : '▼'}</span>
                 </button>
                 {isOpen && (
@@ -306,7 +392,7 @@ export default function ExpensesPage() {
                           {exp.description || cat} · {namesById[exp.paid_by] ?? '?'}
                         </span>
                         <span className="shrink-0">
-                          {Number(exp.amount).toFixed(2)} kr. · {exp.expense_date}
+                          {formatCurrency(exp.amount)} · {formatDate(exp.expense_date)}
                         </span>
                       </li>
                     ))}
@@ -339,18 +425,142 @@ export default function ExpensesPage() {
         </div>
 
         {transfers.length === 0 && <p className="text-sm text-river-400">Alt er gjort op — ingen skylder noget.</p>}
-        <ul className="space-y-1 text-sm">
-          {transfers.map((t, i) => (
-            <li key={i}>
-              <span className="font-medium">{t.fromLabel}</span> skylder{' '}
-              <span className="font-medium">{t.toLabel}</span> {t.amount.toFixed(2)} kr.
-            </li>
-          ))}
+
+        <ul className="space-y-2 text-sm">
+          {transfers.map((t) => {
+            const key = transferKey(t);
+            const fromOptions = partyMembers(t.fromId, pairs);
+            const toOptions = partyMembers(t.toId, pairs);
+            const isSettling = settlingKey === key;
+
+            return (
+              <li key={key} className="rounded-lg border border-river-100 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>
+                    <span className="font-medium">{t.fromLabel}</span> skylder{' '}
+                    <span className="font-medium">{t.toLabel}</span> {formatCurrency(t.amount)}
+                  </span>
+                  {isEditable && !isSettling && (
+                    <button
+                      type="button"
+                      className="text-xs text-river-600 hover:underline"
+                      onClick={() => startSettling(t)}
+                    >
+                      Marker som betalt
+                    </button>
+                  )}
+                </div>
+
+                {isSettling && (
+                  <form onSubmit={handleSettle} className="mt-3 space-y-2 border-t border-river-100 pt-3">
+                    {/* Ved par er det stadig to konkrete personer der sender penge til
+                        hinanden. Vi registrerer dem, så person- og parvisningen
+                        bliver ved med at stemme overens. */}
+                    {(fromOptions.length > 1 || toOptions.length > 1) && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="label text-xs">Betaler</label>
+                          <select
+                            className="input"
+                            value={settleFrom}
+                            onChange={(e) => setSettleFrom(e.target.value)}
+                          >
+                            {fromOptions.map((id) => (
+                              <option key={id} value={id}>
+                                {namesById[id] ?? id}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="label text-xs">Modtager</label>
+                          <select className="input" value={settleTo} onChange={(e) => setSettleTo(e.target.value)}>
+                            {toOptions.map((id) => (
+                              <option key={id} value={id}>
+                                {namesById[id] ?? id}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="label text-xs">Beløb</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0.01"
+                          className="input"
+                          value={settleAmount}
+                          onChange={(e) => setSettleAmount(e.target.value)}
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="label text-xs">Dato</label>
+                        <DatePicker value={settleDate} onChange={setSettleDate} />
+                      </div>
+                    </div>
+
+                    <input
+                      className="input"
+                      placeholder="Note (fx MobilePay)"
+                      value={settleNote}
+                      onChange={(e) => setSettleNote(e.target.value)}
+                    />
+
+                    <p className="text-xs text-river-400">
+                      Betal du kun en del af beløbet, så ret det her — resten bliver stående som gæld.
+                    </p>
+
+                    <div className="flex gap-2">
+                      <button className="btn-primary">Registrer betaling</button>
+                      <button type="button" className="btn-secondary" onClick={() => setSettlingKey(null)}>
+                        Annuller
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </li>
+            );
+          })}
         </ul>
+
         <p className="mt-3 text-xs text-river-400">
-          Baseret på ikke-afregnede poster. Afregnede poster tæller stadig med i det samlede forbrug ovenfor.
+          Poster markeret som "afregnet separat" indgår ikke her, men tæller stadig med i det samlede forbrug ovenfor.
         </p>
       </div>
+
+      {settlements.length > 0 && (
+        <div className="card p-5">
+          <h2 className="mb-1 font-semibold text-river-800">Registrerede betalinger</h2>
+          <p className="mb-3 text-sm text-river-500">
+            I alt {formatCurrency(settledTotal)} overført mellem deltagerne.
+          </p>
+          <ul className="divide-y divide-river-100 text-sm">
+            {settlements.map((s) => (
+              <li key={s.id} className="flex items-center justify-between gap-3 py-2">
+                <span>
+                  <span className="font-medium">{namesById[s.from_user_id] ?? '?'}</span> betalte{' '}
+                  <span className="font-medium">{namesById[s.to_user_id] ?? '?'}</span> {formatCurrency(s.amount)}
+                  <span className="text-river-400"> · {formatDate(s.settled_on)}</span>
+                  {s.note && <span className="block text-xs text-river-400">{s.note}</span>}
+                </span>
+                {isEditable && (
+                  <button
+                    className="shrink-0 text-xs text-red-500 hover:underline"
+                    onClick={() => handleDeleteSettlement(s.id)}
+                  >
+                    Fortryd
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="space-y-3">
         {expenses.map((exp) => (
@@ -379,7 +589,7 @@ export default function ExpensesPage() {
                     type="number"
                     step="0.01"
                     className="input"
-                    placeholder="Beløb (kr.)"
+                    placeholder="Beløb"
                     value={editAmount}
                     onChange={(e) => setEditAmount(e.target.value)}
                     required
@@ -417,9 +627,14 @@ export default function ExpensesPage() {
                       </label>
                     ))}
                   </div>
+                  {editParticipants.length === 0 && (
+                    <p className="mt-1 text-xs text-red-600">Vælg mindst én person at dele udgiften med.</p>
+                  )}
                 </div>
                 <div className="flex gap-2">
-                  <button className="btn-primary">Gem</button>
+                  <button className="btn-primary" disabled={editParticipants.length === 0}>
+                    Gem
+                  </button>
                   <button
                     type="button"
                     className="btn-secondary"
@@ -437,13 +652,22 @@ export default function ExpensesPage() {
                     <span className="text-xs font-normal text-river-400">({exp.category})</span>
                   </p>
                   <p className="text-sm text-river-500">
-                    {exp.amount} kr. · lagt ud af {namesById[exp.paid_by] ?? '?'} · {exp.expense_date}
+                    {formatCurrency(exp.amount)} · lagt ud af {namesById[exp.paid_by] ?? '?'} ·{' '}
+                    {formatDate(exp.expense_date)}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-1 text-xs text-river-500">
-                    <input type="checkbox" checked={exp.is_settled} onChange={() => toggleSettled(exp)} />
-                    Afregnet
+                  <label
+                    className="flex items-center gap-1 text-xs text-river-500"
+                    title="Hele posten er betalt uden om det løbende regnskab — fx rejsen, hvor alle har overført deres andel inden afrejse. Beløbet tæller stadig med i det samlede forbrug."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={exp.is_settled}
+                      disabled={!isEditable}
+                      onChange={() => toggleSettled(exp)}
+                    />
+                    Afregnet separat
                   </label>
                   {isEditable && (
                     <>
