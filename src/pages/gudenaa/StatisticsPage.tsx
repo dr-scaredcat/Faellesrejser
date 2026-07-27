@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { useTrip } from '../../context/TripContext';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { segmentBetween, sortStops } from '../../lib/gudenaa';
 import { computeDedupedTotals } from '../../lib/gudenaaStats';
@@ -7,6 +8,7 @@ import { confidenceInterval95, formatHours, formatKmT } from '../../lib/stats';
 import type { SailingTime, Trip } from '../../lib/types';
 
 export default function StatisticsPage() {
+  const { trip } = useTrip();
   const { stops, loading: stopsLoading } = useGudenaaStops();
   const [sailingTimes, setSailingTimes] = useState<SailingTime[]>([]);
   const [gudenaaTrips, setGudenaaTrips] = useState<Trip[]>([]);
@@ -31,8 +33,7 @@ export default function StatisticsPage() {
 
   // Rå per-registrering-data. Bruges til gennemsnitsfart og highlights — her
   // skal HVER registrering tælle for sig, uanset om flere har logget samme
-  // (eller overlappende) stræk, da det er variationen i data der fortæller
-  // noget om vores fart.
+  // (eller overlappende) stræk.
   const withDistance = useMemo(
     () =>
       sailingTimes.map((st) => ({
@@ -42,82 +43,11 @@ export default function StatisticsPage() {
     [sailingTimes, stops]
   );
 
-  // Afdupliserede totaler til "Samlet sejllængde"/"Samlet sejltid" —
-  // se lib/gudenaaStats.ts for forklaring af metoden.
-  const { totalKm, totalSailingHours, totalWithPauseHours } = useMemo(
-    () => computeDedupedTotals(stops, sailingTimes),
-    [stops, sailingTimes]
+  const currentTripSailingTimes = useMemo(
+    () => sailingTimes.filter((st) => st.trip_id === trip?.id),
+    [sailingTimes, trip?.id]
   );
-
-  const speeds = withDistance
-    .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
-    .map((st) => st.km / st.sailing_time_hours);
-  const speedCI = confidenceInterval95(speeds);
-
-  const fastestSegment = withDistance
-    .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
-    .sort((a, b) => b.km / b.sailing_time_hours - a.km / a.sailing_time_hours)[0];
-  const slowestSegment = withDistance
-    .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
-    .sort((a, b) => a.km / a.sailing_time_hours - b.km / b.sailing_time_hours)[0];
-
-  const stopName = (id: string) => stops.find((s) => s.id === id)?.name ?? '?';
-
-  if (loading || stopsLoading) return <p className="text-river-500">Indlæser…</p>;
-
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="Gudenå-ture" value={`${gudenaaTrips.length}`} />
-        <StatCard label="Samlet sejllængde" value={`${totalKm.toFixed(1)} km`} />
-        <StatCard label="Samlet sejltid (ren)" value={formatHours(totalSailingHours)} />
-        <StatCard label="Samlet tid inkl. pauser" value={formatHours(totalWithPauseHours)} />
-        <StatCard label="Antal loggede sejlture" value={`${sailingTimes.length}`} />
-        <StatCard
-          label="Gennemsnitshastighed"
-          value={speeds.length > 0 ? formatKmT(speedCI.mean) : '–'}
-          sub={speedCI.n >= 2 ? `95% CI: [${formatKmT(speedCI.low)} : ${formatKmT(speedCI.high)}]` : undefined}
-        />
-      </div>
-
-      <p className="text-xs text-river-400">
-        "Samlet sejllængde" og "Samlet tid" tæller hvert stræk på en rejse med én gang, selv hvis flere har
-        logget samme (eller overlappende) stræk — i så fald bruges gennemsnittet af de loggede tider.
-        Gennemsnitshastigheden ovenfor bruger derimod alle {sailingTimes.length} loggede registreringer hver for
-        sig.
-      </p>
-
-      {fastestSegment && (
-        <div className="card p-5">
-          <h3 className="mb-2 font-semibold text-river-800">Highlights</h3>
-          <p className="text-sm text-river-600">
-            Hurtigste log: {stopName(fastestSegment.start_stop_id)} → {stopName(fastestSegment.end_stop_id)} (
-            {formatKmT(fastestSegment.km / fastestSegment.sailing_time_hours)})
-          </p>
-          {slowestSegment && (
-            <p className="text-sm text-river-600">
-              Roligste log: {stopName(slowestSegment.start_stop_id)} → {stopName(slowestSegment.end_stop_id)} (
-              {formatKmT(slowestSegment.km / slowestSegment.sailing_time_hours)})
-            </p>
-          )}
-        </div>
-      )}
-
-      {sailingTimes.length === 0 && (
-        <div className="card p-8 text-center text-river-400">
-          Ingen sejltider er logget endnu. Tilføj data på "Sejltider"-siden for at se statistik her.
-        </div>
-      )}
-    </div>
+  const currentTripWithDistance = useMemo(
+    () => withDistance.filter((st) => st.trip_id === trip?.id),
+    [withDistance, trip?.id]
   );
-}
-
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div className="card p-5">
-      <p className="text-xs uppercase tracking-wide text-river-400">{label}</p>
-      <p className="mt-1 text-2xl font-semibold text-river-800">{value}</p>
-      {sub && <p className="mt-1 text-xs text-river-400">{sub}</p>}
-    </div>
-  );
-}
