@@ -2,16 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useTrip } from '../../context/TripContext';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
-import { segmentBetween, sortStops } from '../../lib/gudenaa';
+import { computeRoutePlanDaySegments, segmentBetween, sortStops } from '../../lib/gudenaa';
 import { computeDedupedTotals } from '../../lib/gudenaaStats';
 import { confidenceInterval95, formatHours, formatKmT } from '../../lib/stats';
-import type { SailingTime, Trip } from '../../lib/types';
+import type { RoutePlan, RoutePlanDay, SailingTime, Trip } from '../../lib/types';
 
 export default function StatisticsPage() {
   const { trip } = useTrip();
   const { stops, loading: stopsLoading } = useGudenaaStops();
   const [sailingTimes, setSailingTimes] = useState<SailingTime[]>([]);
   const [gudenaaTrips, setGudenaaTrips] = useState<Trip[]>([]);
+  const [routePlans, setRoutePlans] = useState<RoutePlan[]>([]);
+  const [routePlanDays, setRoutePlanDays] = useState<RoutePlanDay[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -20,16 +22,25 @@ export default function StatisticsPage() {
 
   async function load() {
     setLoading(true);
-    const [{ data: sailData }, { data: tripData }] = await Promise.all([
+    const [{ data: sailData }, { data: tripData }, { data: planData }, { data: dayData }] = await Promise.all([
       supabase.from('gudenaa_sailing_times').select('*, profile:profiles(*)'),
       supabase.from('trips').select('*').eq('trip_type', 'gudenaa'),
+      supabase.from('gudenaa_route_plans').select('*'),
+      supabase.from('gudenaa_route_plan_days').select('*'),
     ]);
     setSailingTimes((sailData as unknown as SailingTime[]) ?? []);
     setGudenaaTrips((tripData as Trip[]) ?? []);
+    setRoutePlans((planData as RoutePlan[]) ?? []);
+    setRoutePlanDays((dayData as RoutePlanDay[]) ?? []);
     setLoading(false);
   }
 
   const sorted = sortStops(stops);
+  const tripNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const t of gudenaaTrips) map[t.id] = t.name;
+    return map;
+  }, [gudenaaTrips]);
 
   // Rå per-registrering-data. Bruges til gennemsnitsfart og highlights — her
   // skal HVER registrering tælle for sig, uanset om flere har logget samme
@@ -61,9 +72,7 @@ export default function StatisticsPage() {
   );
 
   function speedsFrom(list: typeof withDistance, field: 'sailing_time_hours' | 'total_time_hours') {
-    return list
-      .filter((st) => st.km > 0 && st[field] > 0)
-      .map((st) => st.km / st[field]);
+    return list.filter((st) => st.km > 0 && st[field] > 0).map((st) => st.km / st[field]);
   }
 
   const historicalSpeeds = speedsFrom(withDistance, 'sailing_time_hours');
@@ -86,6 +95,25 @@ export default function StatisticsPage() {
     return `${sign}${pct.toFixed(1)}% ift. historisk`;
   }
 
+  // Længste/korteste planlagte dag, og stop-popularitet — baseret på alle
+  // gemte ruteplaner på tværs af alle Gudenå-ture.
+  const daySegments = useMemo(
+    () => computeRoutePlanDaySegments(stops, routePlans, routePlanDays),
+    [stops, routePlans, routePlanDays]
+  );
+  const longestDay = [...daySegments].sort((a, b) => b.km - a.km)[0];
+  const shortestDay = [...daySegments].sort((a, b) => a.km - b.km)[0];
+
+  const stopUsage = useMemo(() => {
+    const usage = new Map<string, number>();
+    for (const seg of daySegments) {
+      usage.set(seg.fromStopId, (usage.get(seg.fromStopId) ?? 0) + 1);
+      usage.set(seg.toStopId, (usage.get(seg.toStopId) ?? 0) + 1);
+    }
+    return [...usage.entries()].sort((a, b) => b[1] - a[1]);
+  }, [daySegments]);
+  const topStop = stopUsage[0];
+
   const fastestSegment = withDistance
     .filter((st) => st.km > 0 && st.sailing_time_hours > 0)
     .sort((a, b) => b.km / b.sailing_time_hours - a.km / a.sailing_time_hours)[0];
@@ -102,11 +130,9 @@ export default function StatisticsPage() {
       <div>
         <h2 className="mb-3 font-semibold text-river-800">Historiske data (alle Gudenå-ture)</h2>
         <div className="grid gap-4 sm:grid-cols-3">
-          <StatCard label="Gudenå-ture" value={`${gudenaaTrips.length}`} />
           <StatCard label="Samlet sejllængde" value={`${historicalTotals.totalKm.toFixed(1)} km`} />
           <StatCard label="Samlet sejltid (ren)" value={formatHours(historicalTotals.totalSailingHours)} />
           <StatCard label="Samlet tid inkl. pauser" value={formatHours(historicalTotals.totalWithPauseHours)} />
-          <StatCard label="Antal loggede sejlture" value={`${sailingTimes.length}`} />
           <StatCard
             label="Gennemsnitshastighed"
             value={historicalSpeeds.length > 0 ? formatKmT(speedCI.mean) : '–'}
@@ -121,6 +147,13 @@ export default function StatisticsPage() {
                 : undefined
             }
           />
+          <StatCard
+            label="Mest populære stop"
+            value={topStop ? stopName(topStop[0]) : '–'}
+            sub={topStop ? `Brugt som etape-endepunkt ${topStop[1]} gange` : undefined}
+          />
+          <StatCard label="Antal Gudenå-ture" value={`${gudenaaTrips.length}`} />
+          <StatCard label="Antal loggede sejldage" value={`${sailingTimes.length}`} />
         </div>
         <p className="mt-2 text-xs text-river-400">
           "Samlet sejllængde" og "Samlet tid" tæller hvert stræk på en rejse med én gang, selv hvis flere har
@@ -139,7 +172,6 @@ export default function StatisticsPage() {
               label="Samlet tid inkl. pauser"
               value={formatHours(currentTripTotals.totalWithPauseHours)}
             />
-            <StatCard label="Antal loggede sejlture" value={`${currentTripSailingTimes.length}`} />
             <StatCard
               label="Gennemsnitshastighed"
               value={currentSpeeds.length > 0 ? formatKmT(currentSpeedCI.mean) : '–'}
@@ -160,6 +192,7 @@ export default function StatisticsPage() {
                   : undefined
               }
             />
+            <StatCard label="Antal loggede sejldage" value={`${currentTripSailingTimes.length}`} />
           </div>
         ) : (
           <div className="card p-8 text-center text-river-400">
@@ -169,18 +202,47 @@ export default function StatisticsPage() {
         )}
       </div>
 
-      {fastestSegment && (
+      {(longestDay || shortestDay || stopUsage.length > 0 || fastestSegment) && (
         <div className="card p-5">
-          <h3 className="mb-2 font-semibold text-river-800">Highlights (alle ture)</h3>
-          <p className="text-sm text-river-600">
-            Hurtigste log: {stopName(fastestSegment.start_stop_id)} → {stopName(fastestSegment.end_stop_id)} (
-            {formatKmT(fastestSegment.km / fastestSegment.sailing_time_hours)})
-          </p>
-          {slowestSegment && (
-            <p className="text-sm text-river-600">
-              Roligste log: {stopName(slowestSegment.start_stop_id)} → {stopName(slowestSegment.end_stop_id)} (
-              {formatKmT(slowestSegment.km / slowestSegment.sailing_time_hours)})
-            </p>
+          <h3 className="mb-2 font-semibold text-river-800">Highlights</h3>
+          <div className="space-y-1 text-sm text-river-600">
+            {longestDay && (
+              <p>
+                Længste planlagte dag: {stopName(longestDay.fromStopId)} → {stopName(longestDay.toStopId)} (
+                {longestDay.km.toFixed(1)} km, {tripNameById[longestDay.tripId] ?? '—'})
+              </p>
+            )}
+            {shortestDay && (
+              <p>
+                Korteste planlagte dag: {stopName(shortestDay.fromStopId)} → {stopName(shortestDay.toStopId)} (
+                {shortestDay.km.toFixed(1)} km, {tripNameById[shortestDay.tripId] ?? '—'})
+              </p>
+            )}
+            {fastestSegment && (
+              <p>
+                Hurtigste log: {stopName(fastestSegment.start_stop_id)} → {stopName(fastestSegment.end_stop_id)}{' '}
+                ({formatKmT(fastestSegment.km / fastestSegment.sailing_time_hours)})
+              </p>
+            )}
+            {slowestSegment && (
+              <p>
+                Roligste log: {stopName(slowestSegment.start_stop_id)} → {stopName(slowestSegment.end_stop_id)}{' '}
+                ({formatKmT(slowestSegment.km / slowestSegment.sailing_time_hours)})
+              </p>
+            )}
+          </div>
+
+          {stopUsage.length > 0 && (
+            <div className="mt-4">
+              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Mest brugte stop</p>
+              <ul className="space-y-0.5 text-sm text-river-600">
+                {stopUsage.slice(0, 5).map(([stopId, count]) => (
+                  <li key={stopId}>
+                    {stopName(stopId)} — {count} {count === 1 ? 'gang' : 'gange'}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}
