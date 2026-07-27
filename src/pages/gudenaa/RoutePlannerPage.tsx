@@ -5,6 +5,7 @@ import { useToast } from '../../components/Toast';
 import { useMutate } from '../../hooks/useMutate';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { formatHours } from '../../lib/stats';
+import { groupSailingDays } from '../../lib/gudenaaStats';
 import { describeModel, fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
 import { resultantCourse, windEffect } from '../../lib/windEffect';
 import { suggestRoute, type RouteObjective } from '../../lib/routeSuggestion';
@@ -234,9 +235,10 @@ export default function RoutePlannerPage() {
   const totalKm = dayResults.reduce((s, d) => s + d.km, 0);
   const totalHours = dayResults.reduce((s, d) => s + d.hours, 0);
 
-  // Modellerne fittes på alle loggede sejltider — hver registrering for sig,
-  // bevidst ikke dedupliceret (se Statistik-siden for hvorfor totaler og
-  // tidsestimater behandles forskelligt).
+  // Modellerne fittes på grupperede sejldage, ikke på de rå registreringer.
+  // Logger tre personer den samme dag, er det stadig én observation af, hvor
+  // lang tid en dag på åen tager. Talte man dem hver for sig, ville
+  // prædiktionsintervallerne blive for smalle.
   function courseFor(startStopId: string, endStopId: string) {
     const fromIdx = sortedStops.findIndex((s) => s.id === startStopId);
     const toIdx = sortedStops.findIndex((s) => s.id === endStopId);
@@ -251,24 +253,29 @@ export default function RoutePlannerPage() {
     return resultantCourse(segments);
   }
 
+  const sailingDays = useMemo(
+    () => groupSailingDays(stops, sailingTimes),
+    [stops, sailingTimes]
+  );
+
   const observations = useMemo(
     () =>
-      sailingTimes.map((st) => {
-        const course = courseFor(st.start_stop_id, st.end_stop_id);
+      sailingDays.map((dag) => {
+        const course = courseFor(dag.startStopId, dag.endStopId);
         const effect =
-          course && st.wind_speed_ms != null && st.wind_dir_degrees != null
-            ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
+          course && dag.windSpeedMs != null && dag.windDirDegrees != null
+            ? windEffect(course, dag.windSpeedMs, dag.windDirDegrees)
             : null;
         return {
-          distanceKm: segmentBetween(st.start_stop_id, st.end_stop_id).km,
-          sailing: st.sailing_time_hours,
-          total: st.total_time_hours,
-          flowRatio: st.flow_ratio ?? null,
+          distanceKm: dag.km,
+          sailing: dag.sailingHours,
+          total: dag.totalHours,
+          flowRatio: dag.flowRatio,
           tailwindMs: effect?.tailwindMs ?? null,
         };
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sailingTimes, sortedStops]
+    [sailingDays, sortedStops]
   );
 
   const pureModel = useMemo(
