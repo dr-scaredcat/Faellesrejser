@@ -29,11 +29,23 @@ export function TripProvider({ children }: { children: ReactNode }) {
     if (!tripId) return;
     setLoading(true);
 
-    const [{ data: tripData }, { data: memberData }, { data: pairData }] = await Promise.all([
+    const [{ data: tripData }, { data: memberData, error: memberError }, { data: pairData }] = await Promise.all([
       supabase.from('trips').select('*').eq('id', tripId).single(),
-      supabase.from('trip_members').select('*, profile:profiles(*)').eq('trip_id', tripId),
+      // trip_members har to relationer til profiles (user_id og invited_by),
+      // så vi skal eksplicit angive hvilken af dem "profile" skal hentes via
+      // — ellers kan Supabase ikke afgøre det entydigt, og hele koblingen
+      // fejler stille (profile ender som null for alle rækker).
+      supabase
+        .from('trip_members')
+        .select('*, profile:profiles!trip_members_user_id_fkey(*)')
+        .eq('trip_id', tripId),
       supabase.from('trip_pairs').select('*').eq('trip_id', tripId),
     ]);
+
+    if (memberError) {
+      // eslint-disable-next-line no-console
+      console.error('[Fællesrejser] Kunne ikke hente medlemmer/profiler for rejsen', memberError);
+    }
 
     setTrip(tripData as Trip | null);
     setMembers((memberData as unknown as TripMember[]) ?? []);
