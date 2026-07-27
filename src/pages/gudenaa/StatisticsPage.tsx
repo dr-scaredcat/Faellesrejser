@@ -102,14 +102,17 @@ export default function StatisticsPage() {
     [currentTripWithDistance]
   );
 
-  // Referencedistance til prædiktionseksemplet: medianen af de dage, vi rent
-  // faktisk har logget. Så bliver eksemplet noget, I kan genkende.
+  // Referencedistance til prædiktionseksemplet. Bruger rejsens egne stræk,
+  // hvis der er logget nogen — så eksemplet rent faktisk siger noget om
+  // netop denne tur, i stedet for at være et vilkårligt historisk gennemsnit.
+  // Falder tilbage til alle historiske stræk, hvis rejsen intet har endnu.
   const referenceKm = useMemo(() => {
-    const distances = withDistance.map((st) => st.km).filter((km) => km > 0).sort((a, b) => a - b);
+    const kilde = currentTripWithDistance.length > 0 ? currentTripWithDistance : withDistance;
+    const distances = kilde.map((st) => st.km).filter((km) => km > 0).sort((a, b) => a - b);
     if (distances.length === 0) return 0;
     const mid = Math.floor(distances.length / 2);
     return distances.length % 2 === 0 ? (distances[mid - 1] + distances[mid]) / 2 : distances[mid];
-  }, [withDistance]);
+  }, [currentTripWithDistance, withDistance]);
 
   const referencePrediction =
     historicalModel && referenceKm > 0 ? predictTime(historicalModel, referenceKm) : null;
@@ -146,10 +149,12 @@ export default function StatisticsPage() {
   const longestDay = [...daySegments].sort((a, b) => b.km - a.km)[0];
   const shortestDay = [...daySegments].sort((a, b) => a.km - b.km)[0];
 
+  // Kun slutstedet for hver dag tælles. Et stop der bruges som startsted for
+  // næste dag er jo det samme fysiske ophold, som allerede blev talt som
+  // slutsted dagen før — ellers ville næsten alle stop tælles dobbelt.
   const stopUsage = useMemo(() => {
     const usage = new Map<string, number>();
     for (const seg of daySegments) {
-      usage.set(seg.fromStopId, (usage.get(seg.fromStopId) ?? 0) + 1);
       usage.set(seg.toStopId, (usage.get(seg.toStopId) ?? 0) + 1);
     }
     return [...usage.entries()].sort((a, b) => b[1] - a[1]);
@@ -294,6 +299,81 @@ export default function StatisticsPage() {
           </div>
         )}
       </div>
+
+      {hasCurrentTripData && (
+        <div className="card p-5">
+          <h3 className="mb-2 font-semibold text-river-800">Vandføring pr. sejldag</h3>
+          <p className="mb-3 text-sm text-river-500">
+            Hvor meget vand der var i åen den dag, sammenlignet med hvad der er normalt for årstiden — og
+            farten på strækket, så I selv kan se sammenhængen.
+          </p>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-river-100 text-left text-xs uppercase tracking-wide text-river-400">
+                <th className="pb-1 pr-3 font-normal">Dato</th>
+                <th className="pb-1 pr-3 font-normal">Stræk</th>
+                <th className="pb-1 pr-3 font-normal">Vandføring</th>
+                <th className="pb-1 pr-3 font-normal">Fart</th>
+                <th className="pb-1 font-normal">Ift. historisk snit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...currentTripWithDistance]
+                .sort((a, b) => a.sail_date.localeCompare(b.sail_date))
+                .map((st) => {
+                  const speed = st.km > 0 && st.sailing_time_hours > 0 ? st.km / st.sailing_time_hours : null;
+                  const pct = st.flow_ratio != null ? (st.flow_ratio - 1) * 100 : null;
+                  const speedDiff =
+                    speed != null && historicalModel && historicalModel.meanSpeedKmH > 0
+                      ? ((speed - historicalModel.meanSpeedKmH) / historicalModel.meanSpeedKmH) * 100
+                      : null;
+                  return (
+                    <tr key={st.id} className="border-b border-river-50 last:border-0">
+                      <td className="py-1.5 pr-3 text-river-600">{st.sail_date}</td>
+                      <td className="py-1.5 pr-3 text-river-600">
+                        {stopName(st.start_stop_id)} → {stopName(st.end_stop_id)}
+                      </td>
+                      <td className="py-1.5 pr-3">
+                        {pct != null ? (
+                          <span className={pct >= 0 ? 'text-river-700' : 'text-sand-600'}>
+                            {pct >= 0 ? '+' : ''}
+                            {pct.toFixed(0)}% ift. normalt
+                            {st.flow_source === 'nedstroems_tange' && (
+                              <span className="text-river-400"> (Ulstrup)</span>
+                            )}
+                            {st.flow_source === 'opstroems_tange' && (
+                              <span className="text-river-400"> (Åstedbro)</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-river-400">ukendt</span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3 text-river-600">{speed != null ? formatKmT(speed) : '–'}</td>
+                      <td className="py-1.5">
+                        {speedDiff != null ? (
+                          <span className={speedDiff >= 0 ? 'text-river-700' : 'text-sand-600'}>
+                            {speedDiff >= 0 ? '+' : ''}
+                            {speedDiff.toFixed(0)}%
+                          </span>
+                        ) : (
+                          <span className="text-river-400">–</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+          <p className="mt-3 text-xs text-river-400">
+            "Ift. normalt" er dagens vandføring delt med medianen for samme tid af året på den enkelte
+            målestation — de rå tal kan ikke sammenlignes mellem Åstedbro og Ulstrup. "Ift. historisk snit"
+            er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på siden ({historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}).
+            Stemmer de to kolonner overens — mere vand giver en positiv afvigelse begge steder — er det et
+            tegn på, at vandføringen rent faktisk driver farten.
+          </p>
+        </div>
+      )}
 
       {(longestDay || shortestDay || stopUsage.length > 0 || fastestSegment) && (
         <div className="card p-5">
