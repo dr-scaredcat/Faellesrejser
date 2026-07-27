@@ -165,3 +165,23 @@ export interface SailingTime {
   sail_date: string;
   profile?: Profile;
 }
+
+/**
+ * Sejltid beriget med dagens vandføring, som den kommer fra viewet
+ * `sailing_times_with_flow`.
+ *
+ * `flow_ratio` er det tal, beregningerne skal bruge: vandføringen divideret
+ * med medianen for årstiden på den pågældende målestation. Rå m³/s kan ikke
+ * sammenlignes mellem Åstedbro og Ulstrup, men forholdstallet kan.
+ */
+export interface SailingTimeWithFlow extends SailingTime {
+  flow_upstream_m3s: number | null;
+  flow_upstream_ratio: number | null;
+  flow_upstream_percentile: number | null;
+  flow_downstream_m3s: number | null;
+  flow_downstream_ratio: number | null;
+  flow_downstream_percentile: number | null;
+  /** Den station der havde data. Falder tilbage til den anden, hvis en logger svigtede. */
+  flow_ratio: number | null;
+  flow_source: 'opstroems_tange' | 'nedstroems_tange' | null;
+}
