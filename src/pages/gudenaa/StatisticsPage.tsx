@@ -90,11 +90,19 @@ export default function StatisticsPage() {
     field: 'sailing_time_hours' | 'total_time_hours'
   ): PaceModel | null {
     return fitPaceModel(
-      list.map((st) => ({
-        distanceKm: st.km,
-        hours: st[field],
-        flowRatio: st.flow_ratio ?? null,
-      }))
+      list.map((st) => {
+        const course = courseFor(st.start_stop_id, st.end_stop_id);
+        const effect =
+          course && st.wind_speed_ms != null && st.wind_dir_degrees != null
+            ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
+            : null;
+        return {
+          distanceKm: st.km,
+          hours: st[field],
+          flowRatio: st.flow_ratio ?? null,
+          tailwindMs: effect?.tailwindMs ?? null,
+        };
+      })
     );
   }
 
@@ -408,6 +416,13 @@ export default function StatisticsPage() {
                 {' '}
                 Estimaterne ovenfor bruger endnu ikke vandføringen — det kræver mindst 10 sejldage med kendt
                 vandføring, og der er kun {historicalModel.n} registreringer med data indtil videre.
+              </>
+            )}
+            {historicalModel && historicalModel.usesFlow && !historicalModel.usesWind && (
+              <>
+                {' '}
+                Estimaterne ovenfor er justeret for vandføring, men endnu ikke for vind — det kræver mindst
+                10 sejldage med både kendt vandføring og en udfyldt retning på hele strækket.
               </>
             )}
           </p>
