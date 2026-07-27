@@ -1,4 +1,4 @@
-import type { GudenaaStop } from './types';
+import type { GudenaaStop, RoutePlan, RoutePlanDay } from './types';
 
 /**
  * Beregner den skematiske distance (km) og sejltid (timer) mellem to stop,
@@ -25,4 +25,58 @@ export function segmentBetween(
 
 export function sortStops(stops: GudenaaStop[]): GudenaaStop[] {
   return [...stops].sort((a, b) => a.sort_order - b.sort_order);
+}
+
+export interface RoutePlanDaySegment {
+  routePlanId: string;
+  tripId: string;
+  dayNumber: number;
+  fromStopId: string;
+  toStopId: string;
+  km: number;
+  hours: number;
+}
+
+/**
+ * Brækker alle gemte ruteplaner ned i deres enkelte dags-etaper (fra ét stop
+ * til det næste), med den skematiske distance/tid for hver etape. Bruges til
+ * statistik som "længste/korteste dag" og "mest populære stop" på tværs af
+ * alle Gudenå-ture — baseret på de PLANLAGTE ruter, ikke kun de faktisk
+ * loggede sejltider.
+ */
+export function computeRoutePlanDaySegments(
+  stops: GudenaaStop[],
+  plans: RoutePlan[],
+  days: RoutePlanDay[]
+): RoutePlanDaySegment[] {
+  const sorted = sortStops(stops);
+  const daysByPlan = new Map<string, RoutePlanDay[]>();
+  for (const d of days) {
+    const list = daysByPlan.get(d.route_plan_id) ?? [];
+    list.push(d);
+    daysByPlan.set(d.route_plan_id, list);
+  }
+
+  const segments: RoutePlanDaySegment[] = [];
+  for (const plan of plans) {
+    const planDays = (daysByPlan.get(plan.id) ?? []).slice().sort((a, b) => a.day_number - b.day_number);
+    let current = plan.start_stop_id;
+    for (const day of planDays) {
+      if (!day.end_stop_id) continue;
+      const seg = segmentBetween(sorted, current, day.end_stop_id);
+      if (seg.km > 0) {
+        segments.push({
+          routePlanId: plan.id,
+          tripId: plan.trip_id,
+          dayNumber: day.day_number,
+          fromStopId: current,
+          toStopId: day.end_stop_id,
+          km: seg.km,
+          hours: seg.hours,
+        });
+      }
+      current = day.end_stop_id;
+    }
+  }
+  return segments;
 }
