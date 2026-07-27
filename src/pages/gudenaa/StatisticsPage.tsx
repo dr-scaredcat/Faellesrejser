@@ -6,6 +6,13 @@ import { computeRoutePlanDaySegments, segmentBetween, sortStops } from '../../li
 import { computeDedupedTotals } from '../../lib/gudenaaStats';
 import { formatHours, formatKmT } from '../../lib/stats';
 import { fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
+import {
+  compassFromDegrees,
+  describeWindEffect,
+  resultantCourse,
+  windEffect,
+  type ResultantCourse,
+} from '../../lib/windEffect';
 import type { RoutePlan, RoutePlanDay, SailingTimeWithFlow, Trip } from '../../lib/types';
 
 export default function StatisticsPage() {
@@ -83,11 +90,19 @@ export default function StatisticsPage() {
     field: 'sailing_time_hours' | 'total_time_hours'
   ): PaceModel | null {
     return fitPaceModel(
-      list.map((st) => ({
-        distanceKm: st.km,
-        hours: st[field],
-        flowRatio: st.flow_ratio ?? null,
-      }))
+      list.map((st) => {
+        const course = courseFor(st.start_stop_id, st.end_stop_id);
+        const effect =
+          course && st.wind_speed_ms != null && st.wind_dir_degrees != null
+            ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
+            : null;
+        return {
+          distanceKm: st.km,
+          hours: st[field],
+          flowRatio: st.flow_ratio ?? null,
+          tailwindMs: effect?.tailwindMs ?? null,
+        };
+      })
     );
   }
 
@@ -156,6 +171,27 @@ export default function StatisticsPage() {
     .sort((a, b) => a.km / a.sailing_time_hours - b.km / b.sailing_time_hours)[0];
 
   const stopName = (id: string) => stops.find((s) => s.id === id)?.name ?? '?';
+
+  /**
+   * Den samlede retning for et stræk, lagt sammen som distancevægtede
+   * vektorer. Skifter ruten retning undervejs, bliver den resulterende vektor
+   * kortere — og vindens beregnede effekt tilsvarende mindre, hvilket er
+   * netop det rigtige.
+   */
+  function courseFor(startStopId: string, endStopId: string): ResultantCourse | null {
+    const fromIdx = sorted.findIndex((s) => s.id === startStopId);
+    const toIdx = sorted.findIndex((s) => s.id === endStopId);
+    if (fromIdx === -1 || toIdx === -1 || toIdx <= fromIdx) return null;
+
+    const segments = [];
+    for (let i = fromIdx + 1; i <= toIdx; i++) {
+      segments.push({
+        distanceKm: sorted[i].distance_from_previous_km,
+        bearingDegrees: sorted[i].bearing_degrees,
+      });
+    }
+    return resultantCourse(segments);
+  }
 
   if (loading || stopsLoading) return <p className="text-river-500">Indlæser…</p>;
 
@@ -255,80 +291,138 @@ export default function StatisticsPage() {
 
       {hasCurrentTripData && (
         <div className="card p-5">
-          <h3 className="mb-2 font-semibold text-river-800">Vandføring pr. sejldag</h3>
+          <h3 className="mb-2 font-semibold text-river-800">Forhold pr. sejldag</h3>
           <p className="mb-3 text-sm text-river-500">
-            Hvor meget vand der var i åen den dag, sammenlignet med hvad der er normalt for årstiden — og
-            farten på strækket, så I selv kan se sammenhængen.
+            Hvor meget vand der var i åen, og hvordan vinden lå i forhold til sejlretningen — sammenholdt
+            med farten, så I selv kan se sammenhængen.
           </p>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-river-100 text-left text-xs uppercase tracking-wide text-river-400">
-                <th className="pb-1 pr-3 font-normal">Dato</th>
-                <th className="pb-1 pr-3 font-normal">Stræk</th>
-                <th className="pb-1 pr-3 font-normal">Vandføring</th>
-                <th className="pb-1 pr-3 font-normal">Fart</th>
-                <th className="pb-1 font-normal">Ift. historisk snit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...currentTripWithDistance]
-                .sort((a, b) => a.sail_date.localeCompare(b.sail_date))
-                .map((st) => {
-                  const speed = st.km > 0 && st.sailing_time_hours > 0 ? st.km / st.sailing_time_hours : null;
-                  const pct = st.flow_ratio != null ? (st.flow_ratio - 1) * 100 : null;
-                  const speedDiff =
-                    speed != null && historicalModel && historicalModel.meanSpeedKmH > 0
-                      ? ((speed - historicalModel.meanSpeedKmH) / historicalModel.meanSpeedKmH) * 100
-                      : null;
-                  return (
-                    <tr key={st.id} className="border-b border-river-50 last:border-0">
-                      <td className="py-1.5 pr-3 text-river-600">{st.sail_date}</td>
-                      <td className="py-1.5 pr-3 text-river-600">
-                        {stopName(st.start_stop_id)} → {stopName(st.end_stop_id)}
-                      </td>
-                      <td className="py-1.5 pr-3">
-                        {pct != null ? (
-                          <span className={pct >= 0 ? 'text-river-700' : 'text-sand-600'}>
-                            {pct >= 0 ? '+' : ''}
-                            {pct.toFixed(0)}% ift. normalt
-                            {st.flow_source === 'nedstroems_tange' && (
-                              <span className="text-river-400"> (Ulstrup)</span>
-                            )}
-                            {st.flow_source === 'opstroems_tange' && (
-                              <span className="text-river-400"> (Åstedbro)</span>
-                            )}
-                          </span>
-                        ) : (
-                          <span className="text-river-400">ukendt</span>
-                        )}
-                      </td>
-                      <td className="py-1.5 pr-3 text-river-600">{speed != null ? formatKmT(speed) : '–'}</td>
-                      <td className="py-1.5">
-                        {speedDiff != null ? (
-                          <span className={speedDiff >= 0 ? 'text-river-700' : 'text-sand-600'}>
-                            {speedDiff >= 0 ? '+' : ''}
-                            {speedDiff.toFixed(0)}%
-                          </span>
-                        ) : (
-                          <span className="text-river-400">–</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[46rem] text-sm">
+              <thead>
+                <tr className="border-b border-river-100 text-left text-xs uppercase tracking-wide text-river-400">
+                  <th className="pb-1 pr-3 font-normal">Dato</th>
+                  <th className="pb-1 pr-3 font-normal">Stræk</th>
+                  <th className="pb-1 pr-3 font-normal">Vandføring</th>
+                  <th className="pb-1 pr-3 font-normal">Vind</th>
+                  <th className="pb-1 pr-3 font-normal">Fart</th>
+                  <th className="pb-1 font-normal">Ift. historisk snit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...currentTripWithDistance]
+                  .sort((a, b) => a.sail_date.localeCompare(b.sail_date))
+                  .map((st) => {
+                    const speed =
+                      st.km > 0 && st.sailing_time_hours > 0 ? st.km / st.sailing_time_hours : null;
+                    const pct = st.flow_ratio != null ? (st.flow_ratio - 1) * 100 : null;
+                    const speedDiff =
+                      speed != null && historicalModel && historicalModel.meanSpeedKmH > 0
+                        ? ((speed - historicalModel.meanSpeedKmH) / historicalModel.meanSpeedKmH) * 100
+                        : null;
+
+                    const course = courseFor(st.start_stop_id, st.end_stop_id);
+                    const effect =
+                      course && st.wind_speed_ms != null && st.wind_dir_degrees != null
+                        ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
+                        : null;
+
+                    // To uafhængige forbehold: bugtede ruten sig meget, eller
+                    // drejede vinden rundt, er tallet mindre værd.
+                    const usikker =
+                      (course != null && course.coherence < 0.5) ||
+                      (st.wind_steadiness != null && st.wind_steadiness < 0.5);
+
+                    return (
+                      <tr key={st.id} className="border-b border-river-50 last:border-0">
+                        <td className="py-1.5 pr-3 text-river-600">{st.sail_date}</td>
+                        <td className="py-1.5 pr-3 text-river-600">
+                          {stopName(st.start_stop_id)} → {stopName(st.end_stop_id)}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {pct != null ? (
+                            <span className={pct >= 0 ? 'text-river-700' : 'text-sand-600'}>
+                              {pct >= 0 ? '+' : ''}
+                              {pct.toFixed(0)}% ift. normalt
+                              {st.flow_source === 'nedstroems_tange' && (
+                                <span className="text-river-400"> (Ulstrup)</span>
+                              )}
+                              {st.flow_source === 'opstroems_tange' && (
+                                <span className="text-river-400"> (Åstedbro)</span>
+                              )}
+                            </span>
+                          ) : (
+                            <span className="text-river-400">ukendt</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-3">
+                          {effect ? (
+                            <div className="flex items-center gap-2">
+                              <Arrow
+                                degrees={course?.bearingDegrees ?? 0}
+                                className="text-river-600"
+                                title={`Ruten gik mod ${compassFromDegrees(course?.bearingDegrees) ?? '?'}`}
+                              />
+                              <Arrow
+                                degrees={(st.wind_dir_degrees ?? 0) + 180}
+                                className="text-sand-600"
+                                title={`Vinden kom fra ${compassFromDegrees(st.wind_dir_degrees) ?? '?'}`}
+                              />
+                              <span
+                                className={usikker ? 'text-river-400' : 'text-river-700'}
+                                title={
+                                  usikker
+                                    ? 'Ruten skiftede meget retning, eller vinden drejede i løbet af dagen. Tallet er derfor usikkert.'
+                                    : undefined
+                                }
+                              >
+                                {usikker && '~'}
+                                {describeWindEffect(effect)}
+                              </span>
+                            </div>
+                          ) : course && course.missingBearings > 0 ? (
+                            <span className="text-river-400">retning mangler</span>
+                          ) : (
+                            <span className="text-river-400">ukendt</span>
+                          )}
+                        </td>
+                        <td className="py-1.5 pr-3 text-river-600">
+                          {speed != null ? formatKmT(speed) : '–'}
+                        </td>
+                        <td className="py-1.5">
+                          {speedDiff != null ? (
+                            <span className={speedDiff >= 0 ? 'text-river-700' : 'text-sand-600'}>
+                              {speedDiff >= 0 ? '+' : ''}
+                              {speedDiff.toFixed(0)}%
+                            </span>
+                          ) : (
+                            <span className="text-river-400">–</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
           <p className="mt-3 text-xs text-river-400">
             "Ift. normalt" er dagens vandføring delt med medianen for samme tid af året på den enkelte
-            målestation — de rå tal kan ikke sammenlignes mellem Åstedbro og Ulstrup. "Ift. historisk snit"
-            er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på siden ({historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}).
-            Stemmer de to kolonner overens — mere vand giver en positiv afvigelse begge steder — er det et
-            tegn på, at vandføringen rent faktisk driver farten.
+            målestation — de rå tal kan ikke sammenlignes mellem Åstedbro og Ulstrup. Pilene viser rutens
+            samlede retning og den vej vinden blæste; en tilde foran vindtallet betyder, at ruten bugtede
+            sig meget, eller at vinden drejede i løbet af dagen, så nettoeffekten er usikker.
+            "Ift. historisk snit" er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på
+            siden ({historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}).
             {historicalModel && !historicalModel.usesFlow && (
               <>
                 {' '}
                 Estimaterne ovenfor bruger endnu ikke vandføringen — det kræver mindst 10 sejldage med kendt
                 vandføring, og der er kun {historicalModel.n} registreringer med data indtil videre.
+              </>
+            )}
+            {historicalModel && historicalModel.usesFlow && !historicalModel.usesWind && (
+              <>
+                {' '}
+                Estimaterne ovenfor er justeret for vandføring, men endnu ikke for vind — det kræver mindst
+                10 sejldage med både kendt vandføring og en udfyldt retning på hele strækket.
               </>
             )}
           </p>
@@ -396,5 +490,39 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
       <p className="mt-1 text-2xl font-semibold text-river-800">{value}</p>
       {sub && <p className="mt-1 text-xs text-river-400">{sub}</p>}
     </div>
+  );
+}
+
+/**
+ * Pil der peger i en given kompasretning. 0 grader er op (nord), og den
+ * drejer med uret — samme konvention som resten af beregningen.
+ */
+function Arrow({
+  degrees,
+  className,
+  title,
+}: {
+  degrees: number;
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={`h-4 w-4 shrink-0 ${className ?? ''}`}
+      style={{ transform: `rotate(${degrees}deg)` }}
+      role="img"
+      aria-label={title}
+    >
+      {title && <title>{title}</title>}
+      <path
+        d="M12 3 L12 21 M12 3 L7.5 8.5 M12 3 L16.5 8.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }

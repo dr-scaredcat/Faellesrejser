@@ -6,6 +6,7 @@ import { useMutate } from '../../hooks/useMutate';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { formatHours } from '../../lib/stats';
 import { describeModel, fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
+import { resultantCourse, windEffect } from '../../lib/windEffect';
 import { suggestRoute, type RouteObjective } from '../../lib/routeSuggestion';
 import type { GudenaaStop, RoutePlan, RoutePlanDay, SailingTimeWithFlow } from '../../lib/types';
 
@@ -236,14 +237,36 @@ export default function RoutePlannerPage() {
   // Modellerne fittes på alle loggede sejltider — hver registrering for sig,
   // bevidst ikke dedupliceret (se Statistik-siden for hvorfor totaler og
   // tidsestimater behandles forskelligt).
+  function courseFor(startStopId: string, endStopId: string) {
+    const fromIdx = sortedStops.findIndex((s) => s.id === startStopId);
+    const toIdx = sortedStops.findIndex((s) => s.id === endStopId);
+    if (fromIdx === -1 || toIdx === -1 || toIdx <= fromIdx) return null;
+    const segments = [];
+    for (let i = fromIdx + 1; i <= toIdx; i++) {
+      segments.push({
+        distanceKm: sortedStops[i].distance_from_previous_km,
+        bearingDegrees: sortedStops[i].bearing_degrees,
+      });
+    }
+    return resultantCourse(segments);
+  }
+
   const observations = useMemo(
     () =>
-      sailingTimes.map((st) => ({
-        distanceKm: segmentBetween(st.start_stop_id, st.end_stop_id).km,
-        sailing: st.sailing_time_hours,
-        total: st.total_time_hours,
-        flowRatio: st.flow_ratio ?? null,
-      })),
+      sailingTimes.map((st) => {
+        const course = courseFor(st.start_stop_id, st.end_stop_id);
+        const effect =
+          course && st.wind_speed_ms != null && st.wind_dir_degrees != null
+            ? windEffect(course, st.wind_speed_ms, st.wind_dir_degrees)
+            : null;
+        return {
+          distanceKm: segmentBetween(st.start_stop_id, st.end_stop_id).km,
+          sailing: st.sailing_time_hours,
+          total: st.total_time_hours,
+          flowRatio: st.flow_ratio ?? null,
+          tailwindMs: effect?.tailwindMs ?? null,
+        };
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sailingTimes, sortedStops]
   );
@@ -251,14 +274,24 @@ export default function RoutePlannerPage() {
   const pureModel = useMemo(
     () =>
       fitPaceModel(
-        observations.map((o) => ({ distanceKm: o.distanceKm, hours: o.sailing, flowRatio: o.flowRatio }))
+        observations.map((o) => ({
+          distanceKm: o.distanceKm,
+          hours: o.sailing,
+          flowRatio: o.flowRatio,
+          tailwindMs: o.tailwindMs,
+        }))
       ),
     [observations]
   );
   const pausesModel = useMemo(
     () =>
       fitPaceModel(
-        observations.map((o) => ({ distanceKm: o.distanceKm, hours: o.total, flowRatio: o.flowRatio }))
+        observations.map((o) => ({
+          distanceKm: o.distanceKm,
+          hours: o.total,
+          flowRatio: o.flowRatio,
+          tailwindMs: o.tailwindMs,
+        }))
       ),
     [observations]
   );
@@ -475,7 +508,8 @@ export default function RoutePlannerPage() {
               <p className="mt-3 text-xs text-river-400">
                 Intervallet er et 95% prædiktionsinterval: det er spændet, en enkelt ny tur forventes at
                 lande indenfor — ikke usikkerheden på gennemsnittet. Bygger på {describeModel(pureModel)}.
-                {pureModel.usesFlow && ' Estimatet gælder ved normal vandføring for årstiden.'}
+                {(pureModel.usesFlow || pureModel.usesWind) &&
+                  ' Estimatet gælder ved normale forhold for årstiden.'}
               </p>
             )}
           </div>

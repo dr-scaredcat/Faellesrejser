@@ -189,4 +189,16 @@ export interface SailingTimeWithFlow extends SailingTime {
   /** Den station der havde data. Falder tilbage til den anden, hvis en logger svigtede. */
   flow_ratio: number | null;
   flow_source: 'opstroems_tange' | 'nedstroems_tange' | null;
+
+  /**
+   * Døgnets vindvektor. Det er DISSE to der skal bruges til at beregne med-
+   * og modvind — de har allerede udlignet vind, der skiftede retning i løbet
+   * af dagen. Retningen er den vinden kom FRA, meteorologisk konvention.
+   */
+  wind_speed_ms: number | null;
+  wind_dir_degrees: number | null;
+  /** Hvor meget det blæste uanset retning. Kun til visning. */
+  wind_scalar_speed_ms: number | null;
+  /** 0-1. Tæt på 1 = vinden holdt retning hele dagen. */
+  wind_steadiness: number | null;
 }

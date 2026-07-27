@@ -3,46 +3,42 @@
  *
  * HVORFOR IKKE BARE ET GENNEMSNIT AF FARTER
  *
- * Den tidligere metode tog gennemsnittet af (km/time) på tværs af
- * registreringer og lagde et 95% konfidensinterval om det. Det havde to
- * problemer:
- *
- *  1. Et konfidensinterval beskriver, hvor præcist vi kender *gennemsnittet*.
- *     Det bliver smallere og smallere, jo mere data vi samler — men vi vil
- *     vide, hvad ÉN ny dag lander på, og den spredning forsvinder ikke.
- *     Det kræver et prædiktionsinterval.
- *
- *  2. Et gennemsnit af farter vægter et 3 km-stræk lige så tungt som et
- *     25 km-stræk.
+ * Et gennemsnit af (km/time) på tværs af registreringer har to problemer:
+ * det vægter et 3 km-stræk lige så tungt som et 25 km-stræk, og et
+ * konfidensinterval om det beskriver kun, hvor præcist vi kender
+ * gennemsnittet. Vi vil vide, hvad ÉN ny dag lander på, og den spredning
+ * forsvinder ikke, uanset hvor meget data vi samler.
  *
  * MODELLEN
  *
- * Vi regner i tempo (timer pr. km) i stedet for fart, og fitter
+ * Vi regner i tempo (timer pr. km) og fitter
  *
- *     tᵢ = dᵢ · (β + γ·ln fᵢ) + εᵢ,     Var(εᵢ) = σ²·dᵢ
+ *     tᵢ = dᵢ · (β + γ·ln fᵢ + δ·wᵢ) + εᵢ,     Var(εᵢ) = σ²·dᵢ
  *
  * hvor dᵢ er distancen, fᵢ er vandføringen i forhold til det normale for
- * årstiden, og variansen vokser med distancen — fejl akkumulerer undervejs.
+ * årstiden, og wᵢ er medvindskomponenten langs ruten i m/s. Variansen vokser
+ * med distancen, fordi fejl akkumulerer undervejs.
  *
- * Vægtet mindste kvadrat med vægte 1/dᵢ giver i den simple model (uden
- * vandføring) præcis β̂ = Σtᵢ/Σdᵢ, altså samlet tid over samlet distance. Den
- * korrekte vægtning falder ud af modellen af sig selv.
+ * Vandføringen indgår logaritmisk, fordi den er et positivt forholdstal og
+ * tilnærmelsesvis log-normalfordelt — dobbelt og halvt så meget vand bør være
+ * lige store afvigelser i hver sin retning. Vinden indgår lineært, fordi den
+ * er fortegnsbestemt: medvind er positiv, modvind negativ, og en logaritme
+ * ville være meningsløs.
  *
- * Prædiktionsintervallet for en ny dag på d km bliver
+ * Uden nogen af de to led reducerer modellen til β̂ = Σtᵢ/Σdᵢ, altså samlet
+ * tid over samlet distance. Den korrekte vægtning falder ud af modellen af
+ * sig selv.
  *
- *     t̂ ± t₀.₉₇₅,df · σ̂ · √d · √(1 + q)
+ * HVAD DE EKSTRA LED FAKTISK GØR
  *
- * hvor q afhænger af, hvor langt dagen ligger fra det, vi har data på. Det
- * betyder blandt andet, at en lang dag får et bredere interval end en kort —
- * hvilket den gamle metode ikke fangede.
+ * Når man planlægger en tur måneder ude i fremtiden, kender man hverken vind
+ * eller vandføring, og estimatet regnes derfor på normale forhold. Leddene
+ * flytter altså ikke midtpunktet — de forklarer en del af variationen, så σ̂
+ * falder og prædiktionsintervallet bliver smallere. Man får et mere præcist
+ * udsagn om en normal dag, ikke et andet gæt.
  *
- * VANDFØRING
- *
- * Vandføringen indgår som ln af forholdet til medianen for årstiden, ikke som
- * rå m³/s. Dels fordi rå værdier ikke kan sammenlignes mellem målestationer,
- * dels fordi vandføring er tilnærmelsesvis log-normalfordelt: "dobbelt så
- * meget vand" og "halvt så meget vand" bør være lige store afvigelser i hver
- * sin retning.
+ * Kender man derimod vejrudsigten få dage før afrejse, kan de faktiske
+ * forhold sendes med, og så flytter estimatet sig også.
  */
 
 export interface PaceObservation {
@@ -50,27 +46,30 @@ export interface PaceObservation {
   hours: number;
   /** Vandføring divideret med medianen for årstiden. Null hvis ukendt. */
   flowRatio?: number | null;
+  /** Medvindskomponent langs ruten i m/s. Positiv = medvind. Null hvis ukendt. */
+  tailwindMs?: number | null;
+}
+
+export interface PaceConditions {
+  flowRatio?: number | null;
+  tailwindMs?: number | null;
 }
 
 export interface PaceModel {
-  /** Antal observationer modellen er fittet på. */
   n: number;
-  /** Frihedsgrader: n minus antal parametre. */
   df: number;
-  /** β — timer pr. km ved normal vandføring. */
+  /** β — timer pr. km ved normale forhold. */
   paceHoursPerKm: number;
-  /** γ — ændring i tempo pr. enhed ln(vandføringsforhold). Null i den flade model. */
+  /** γ — ændring i tempo pr. enhed ln(vandføringsforhold). Null hvis ikke med. */
   flowCoefficient: number | null;
-  /** Residualspredning på den vægtede skala. */
+  /** δ — ændring i tempo pr. m/s medvind. Null hvis ikke med. */
+  windCoefficient: number | null;
   sigma: number;
-  /** Til visning: 1/β. */
   meanSpeedKmH: number;
   usesFlow: boolean;
-  /** Mellemregninger til prædiktionsvariansen. */
-  s11: number;
-  s12: number;
-  s22: number;
-  det: number;
+  usesWind: boolean;
+  /** Inverteret normalmatrix, brugt til prædiktionsvariansen. */
+  inverse: number[][];
 }
 
 export interface PacePrediction {
@@ -82,182 +81,231 @@ export interface PacePrediction {
 export interface FitOptions {
   /**
    * Hvor mange observationer med kendt vandføring der skal til, før den får
-   * lov at indgå. Under grænsen bruges den flade model — med få dage er en
+   * lov at indgå. Under grænsen bruges den enklere model — med få dage er en
    * ekstra variabel en genvej til at forklare støj.
    */
   minFlowObservations?: number;
+  /** Tilsvarende for vind. */
+  minWindObservations?: number;
 }
 
-const DEFAULT_MIN_FLOW_OBSERVATIONS = 10;
+const DEFAULT_MIN_OBSERVATIONS = 10;
 
 export function fitPaceModel(
   observations: PaceObservation[],
   options: FitOptions = {}
 ): PaceModel | null {
-  const minFlow = options.minFlowObservations ?? DEFAULT_MIN_FLOW_OBSERVATIONS;
+  const minFlow = options.minFlowObservations ?? DEFAULT_MIN_OBSERVATIONS;
+  const minWind = options.minWindObservations ?? DEFAULT_MIN_OBSERVATIONS;
 
   const valid = observations.filter(
-    (o) =>
-      isFinite(o.distanceKm) && o.distanceKm > 0 && isFinite(o.hours) && o.hours > 0
+    (o) => isFinite(o.distanceKm) && o.distanceKm > 0 && isFinite(o.hours) && o.hours > 0
   );
   if (valid.length < 2) return null;
 
-  const withFlow = valid.filter(
-    (o) => o.flowRatio != null && isFinite(o.flowRatio) && o.flowRatio > 0
-  );
+  const harFlow = (o: PaceObservation) =>
+    o.flowRatio != null && isFinite(o.flowRatio) && o.flowRatio > 0;
+  const harVind = (o: PaceObservation) => o.tailwindMs != null && isFinite(o.tailwindMs);
 
-  // Bruger vi vandføring, fitter vi kun på de dage der faktisk har den — ellers
-  // ville halvdelen af observationerne bidrage til β uden at bidrage til γ.
-  const useFlow = withFlow.length >= minFlow && withFlow.length >= 3;
-  const data = useFlow ? withFlow : valid;
+  let brugFlow = valid.filter(harFlow).length >= minFlow;
+  let brugVind = valid.filter(harVind).length >= minWind;
 
-  if (useFlow) {
-    const model = fitTwoParameter(data);
-    // Er der ingen variation i vandføringen, er systemet singulært. Så falder
-    // vi tilbage til den flade model frem for at dividere med nul.
-    if (model) return model;
+  // Bruges begge, skal modellen fittes på de dage der har BEGGE dele — ellers
+  // ville nogle observationer bidrage til grundtempoet uden at bidrage til
+  // koefficienterne, og det ville forvride dem alle tre.
+  //
+  // Er der ikke nok af dem, droppes vinden først: vandføringen er den mest
+  // veletablerede af de to, og den er målt frem for beregnet ud fra et skøn
+  // over rutens retning.
+  for (;;) {
+    const data = udvaelg(valid, brugFlow, brugVind, harFlow, harVind);
+    const parametre = 1 + (brugFlow ? 1 : 0) + (brugVind ? 1 : 0);
+
+    if (data.length >= parametre + 1) {
+      const model = fitVaegtet(data, brugFlow, brugVind);
+      if (model) return model;
+    }
+
+    if (brugVind) brugVind = false;
+    else if (brugFlow) brugFlow = false;
+    else return null;
   }
-
-  return fitOneParameter(valid);
 }
 
-function fitOneParameter(data: PaceObservation[]): PaceModel | null {
-  const n = data.length;
-  const df = n - 1;
-  if (df < 1) return null;
-
-  const sumHours = data.reduce((s, o) => s + o.hours, 0);
-  const sumKm = data.reduce((s, o) => s + o.distanceKm, 0);
-  if (sumKm <= 0) return null;
-
-  const beta = sumHours / sumKm;
-
-  // σ² = Σ (tᵢ − β dᵢ)² / dᵢ / (n − 1)
-  const rss = data.reduce((s, o) => {
-    const residual = o.hours - beta * o.distanceKm;
-    return s + (residual * residual) / o.distanceKm;
-  }, 0);
-  const sigma = Math.sqrt(rss / df);
-
-  return {
-    n,
-    df,
-    paceHoursPerKm: beta,
-    flowCoefficient: null,
-    sigma,
-    meanSpeedKmH: beta > 0 ? 1 / beta : 0,
-    usesFlow: false,
-    s11: sumKm,
-    s12: 0,
-    s22: 0,
-    det: sumKm,
-  };
+function udvaelg(
+  data: PaceObservation[],
+  brugFlow: boolean,
+  brugVind: boolean,
+  harFlow: (o: PaceObservation) => boolean,
+  harVind: (o: PaceObservation) => boolean
+): PaceObservation[] {
+  return data.filter((o) => (!brugFlow || harFlow(o)) && (!brugVind || harVind(o)));
 }
 
-function fitTwoParameter(data: PaceObservation[]): PaceModel | null {
+/**
+ * Vægtet mindste kvadrat. Vi deler alt med √d, så residualerne får konstant
+ * varians, og kan derefter bruge almindelig mindste kvadrat på det
+ * transformerede system.
+ */
+function fitVaegtet(
+  data: PaceObservation[],
+  brugFlow: boolean,
+  brugVind: boolean
+): PaceModel | null {
+  const p = 1 + (brugFlow ? 1 : 0) + (brugVind ? 1 : 0);
   const n = data.length;
-  const df = n - 2;
+  const df = n - p;
   if (df < 1) return null;
 
-  // Vi deler alt med √d, så residualerne får konstant varians og vi kan bruge
-  // almindelig mindste kvadrat på det transformerede system.
-  let s11 = 0;
-  let s12 = 0;
-  let s22 = 0;
-  let t1 = 0;
-  let t2 = 0;
-
-  const rows = data.map((o) => {
-    const root = Math.sqrt(o.distanceKm);
-    const x1 = root;
-    const x2 = root * Math.log(o.flowRatio as number);
-    const y = o.hours / root;
-    s11 += x1 * x1;
-    s12 += x1 * x2;
-    s22 += x2 * x2;
-    t1 += x1 * y;
-    t2 += x2 * y;
-    return { x1, x2, y };
+  const raekker = data.map((o) => {
+    const rod = Math.sqrt(o.distanceKm);
+    const x: number[] = [rod];
+    if (brugFlow) x.push(rod * Math.log(o.flowRatio as number));
+    if (brugVind) x.push(rod * (o.tailwindMs as number));
+    return { x, y: o.hours / rod };
   });
 
-  const det = s11 * s22 - s12 * s12;
-  // Ingen reel variation i vandføringen — systemet kan ikke løses meningsfuldt.
-  if (!isFinite(det) || Math.abs(det) < 1e-9 * Math.max(1, s11 * s22)) return null;
+  // Normalligningerne X'X b = X'y
+  const xtx: number[][] = Array.from({ length: p }, () => new Array(p).fill(0));
+  const xty: number[] = new Array(p).fill(0);
 
-  const beta = (s22 * t1 - s12 * t2) / det;
-  const gamma = (s11 * t2 - s12 * t1) / det;
+  for (const r of raekker) {
+    for (let i = 0; i < p; i++) {
+      xty[i] += r.x[i] * r.y;
+      for (let j = 0; j < p; j++) xtx[i][j] += r.x[i] * r.x[j];
+    }
+  }
 
-  const rss = rows.reduce((sum, r) => {
-    const residual = r.y - beta * r.x1 - gamma * r.x2;
+  const inverse = inverter(xtx);
+  if (!inverse) return null;
+
+  const b = inverse.map((raekke) => raekke.reduce((sum, v, j) => sum + v * xty[j], 0));
+  if (!b.every((v) => isFinite(v))) return null;
+
+  const beta = b[0];
+  if (!isFinite(beta) || beta <= 0) return null;
+
+  const rss = raekker.reduce((sum, r) => {
+    const forudsagt = r.x.reduce((s, xi, i) => s + xi * b[i], 0);
+    const residual = r.y - forudsagt;
     return sum + residual * residual;
   }, 0);
-  const sigma = Math.sqrt(rss / df);
 
-  if (!isFinite(beta) || beta <= 0) return null;
+  let index = 1;
+  const gamma = brugFlow ? b[index++] : null;
+  const delta = brugVind ? b[index] : null;
 
   return {
     n,
     df,
     paceHoursPerKm: beta,
     flowCoefficient: gamma,
-    sigma,
+    windCoefficient: delta,
+    sigma: Math.sqrt(rss / df),
     meanSpeedKmH: 1 / beta,
-    usesFlow: true,
-    s11,
-    s12,
-    s22,
-    det,
+    usesFlow: brugFlow,
+    usesWind: brugVind,
+    inverse,
   };
 }
 
 /**
  * Forudsiger tidsforbruget for en dag på `distanceKm`.
  *
- * `flowRatio` er vandføringen i forhold til det normale for årstiden. Udelades
- * den, regnes der på normale forhold (forhold = 1), hvilket er det rigtige når
- * man planlægger en tur, der ligger måneder ude i fremtiden.
+ * Udelades forholdene, regnes der på normal vandføring og vindstille — det
+ * rigtige, når man planlægger en tur måneder ude i fremtiden.
  */
 export function predictTime(
   model: PaceModel,
   distanceKm: number,
-  flowRatio?: number | null
+  conditions: PaceConditions = {}
 ): PacePrediction | null {
   if (!isFinite(distanceKm) || distanceKm <= 0) return null;
 
-  const root = Math.sqrt(distanceKm);
-  const ratio = model.usesFlow && flowRatio != null && flowRatio > 0 ? flowRatio : 1;
-  const logRatio = Math.log(ratio);
+  const rod = Math.sqrt(distanceKm);
+  const x: number[] = [rod];
 
-  const x1 = root;
-  const x2 = model.usesFlow ? root * logRatio : 0;
+  if (model.usesFlow) {
+    const forhold =
+      conditions.flowRatio != null && isFinite(conditions.flowRatio) && conditions.flowRatio > 0
+        ? conditions.flowRatio
+        : 1;
+    x.push(rod * Math.log(forhold));
+  }
 
-  const hours =
-    distanceKm * (model.paceHoursPerKm + (model.usesFlow ? (model.flowCoefficient ?? 0) * logRatio : 0));
+  if (model.usesWind) {
+    const vind =
+      conditions.tailwindMs != null && isFinite(conditions.tailwindMs) ? conditions.tailwindMs : 0;
+    x.push(rod * vind);
+  }
 
-  // Leverage: hvor langt ligger denne dag fra tyngdepunktet i vores data.
-  const leverage = model.usesFlow
-    ? (model.s22 * x1 * x1 - 2 * model.s12 * x1 * x2 + model.s11 * x2 * x2) / model.det
-    : (x1 * x1) / model.s11;
+  const koefficienter = [
+    model.paceHoursPerKm,
+    ...(model.usesFlow ? [model.flowCoefficient ?? 0] : []),
+    ...(model.usesWind ? [model.windCoefficient ?? 0] : []),
+  ];
 
-  const sePrediction = root * model.sigma * Math.sqrt(1 + Math.max(0, leverage));
+  const yHat = x.reduce((sum, xi, i) => sum + xi * koefficienter[i], 0);
+  const hours = rod * yHat;
+  if (!isFinite(hours) || hours <= 0) return null;
+
+  // Leverage: hvor langt denne dag ligger fra tyngdepunktet i vores data.
+  let leverage = 0;
+  for (let i = 0; i < x.length; i++) {
+    for (let j = 0; j < x.length; j++) leverage += x[i] * model.inverse[i][j] * x[j];
+  }
+
+  const sePrediction = rod * model.sigma * Math.sqrt(1 + Math.max(0, leverage));
   const margin = tQuantile975(model.df) * sePrediction;
 
-  return {
-    hours,
-    low: Math.max(0, hours - margin),
-    high: hours + margin,
-  };
+  return { hours, low: Math.max(0, hours - margin), high: hours + margin };
 }
 
 /** Beskrivelse til brugeren af, hvad modellen bygger på. */
 export function describeModel(model: PaceModel): string {
   const grundlag = `${model.n} ${model.n === 1 ? 'registrering' : 'registreringer'}`;
-  return model.usesFlow
-    ? `${grundlag}, justeret for vandføring`
-    : `${grundlag}`;
+  const justeringer: string[] = [];
+  if (model.usesFlow) justeringer.push('vandføring');
+  if (model.usesWind) justeringer.push('vind');
+  if (justeringer.length === 0) return grundlag;
+  return `${grundlag}, justeret for ${justeringer.join(' og ')}`;
 }
 
 // ---------------------------------------------------------------------------
+
+/** Gauss-Jordan med delvis pivotering. Matricerne her er højst 3x3. */
+function inverter(matrix: number[][]): number[][] | null {
+  const n = matrix.length;
+  const a = matrix.map((raekke, i) => [
+    ...raekke,
+    ...Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)),
+  ]);
+
+  for (let kolonne = 0; kolonne < n; kolonne++) {
+    let pivot = kolonne;
+    for (let r = kolonne + 1; r < n; r++) {
+      if (Math.abs(a[r][kolonne]) > Math.abs(a[pivot][kolonne])) pivot = r;
+    }
+
+    // Er pivoten nul, er der ingen variation i den variabel, og systemet kan
+    // ikke løses. Kalderen falder så tilbage til en enklere model.
+    if (Math.abs(a[pivot][kolonne]) < 1e-12) return null;
+
+    [a[kolonne], a[pivot]] = [a[pivot], a[kolonne]];
+
+    const divisor = a[kolonne][kolonne];
+    for (let j = 0; j < 2 * n; j++) a[kolonne][j] /= divisor;
+
+    for (let r = 0; r < n; r++) {
+      if (r === kolonne) continue;
+      const faktor = a[r][kolonne];
+      if (faktor === 0) continue;
+      for (let j = 0; j < 2 * n; j++) a[r][j] -= faktor * a[kolonne][j];
+    }
+  }
+
+  return a.map((raekke) => raekke.slice(n));
+}
 
 const T_TABLE: Record<number, number> = {
   1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
@@ -286,8 +334,7 @@ export function tQuantile975(df: number): number {
     const [df1, t1] = T_COARSE[i + 1];
     if (df <= df1) {
       if (!isFinite(df1)) return t1;
-      const andel = (df - df0) / (df1 - df0);
-      return t0 + andel * (t1 - t0);
+      return t0 + ((df - df0) / (df1 - df0)) * (t1 - t0);
     }
   }
   return 1.96;
