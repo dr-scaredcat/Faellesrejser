@@ -8,8 +8,7 @@ interface DateTimePickerProps {
 
 // Kombinerer den danske DatePicker (dd/mm/åååå) med et separat
 // klokkeslæt-felt, og sætter dem sammen til samme 'YYYY-MM-DDTHH:mm'-format
-// som et natívt <input type="datetime-local"> bruger, så resten af koden
-// (database-kald m.m.) ikke behøver at ændres.
+// som et natívt <input type="datetime-local"> bruger.
 export function DateTimePicker({ value, onChange }: DateTimePickerProps) {
   const [datePart, timePart] = value ? value.split('T') : ['', ''];
 
@@ -29,6 +28,7 @@ export function DateTimePicker({ value, onChange }: DateTimePickerProps) {
       </div>
       <input
         type="time"
+        step={300}
         className="input w-28"
         value={timePart}
         onChange={handleTimeChange}
