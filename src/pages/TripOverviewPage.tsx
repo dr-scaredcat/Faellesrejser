@@ -1,45 +1,51 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useTrip } from '../context/TripContext';
 import { useAuth } from '../context/AuthContext';
+import type { Profile } from '../lib/types';
 
 export default function TripOverviewPage() {
   const { trip, members, pairs, namesById, isCreatorOrAdmin, isEditable, refresh } = useTrip();
   const { profile } = useAuth();
   const navigate = useNavigate();
-  const [inviteEmail, setInviteEmail] = useState('');
+
+  const [allProfiles, setAllProfiles] = useState<Profile[]>([]);
+  const [showInviteForm, setShowInviteForm] = useState(false);
+  const [selectedInviteId, setSelectedInviteId] = useState('');
   const [inviteError, setInviteError] = useState<string | null>(null);
+
   const [member1, setMember1] = useState('');
   const [member2, setMember2] = useState('');
   const [pairError, setPairError] = useState<string | null>(null);
 
+  useEffect(() => {
+    loadProfiles();
+  }, []);
+
+  async function loadProfiles() {
+    const { data } = await supabase.from('profiles').select('*').order('name');
+    setAllProfiles((data as Profile[]) ?? []);
+  }
+
+  const availableProfiles = allProfiles.filter((p) => !members.some((m) => m.user_id === p.id));
+
   async function handleInvite(e: FormEvent) {
     e.preventDefault();
     setInviteError(null);
-    if (!trip) return;
-
-    const { data: userToInvite } = await supabase
-      .from('profiles')
-      .select('id')
-      .eq('email', inviteEmail.trim())
-      .maybeSingle();
-
-    if (!userToInvite) {
-      setInviteError('Ingen bruger fundet med denne email. De skal oprette en konto først.');
-      return;
-    }
+    if (!trip || !selectedInviteId) return;
 
     const { error } = await supabase
       .from('trip_members')
-      .insert({ trip_id: trip.id, user_id: userToInvite.id, invited_by: profile?.id });
+      .insert({ trip_id: trip.id, user_id: selectedInviteId, invited_by: profile?.id });
 
     if (error) {
       setInviteError(error.code === '23505' ? 'Personen er allerede medlem.' : error.message);
       return;
     }
 
-    setInviteEmail('');
+    setSelectedInviteId('');
+    setShowInviteForm(false);
     refresh();
   }
 
@@ -102,18 +108,49 @@ export default function TripOverviewPage() {
           ))}
         </ul>
 
-        {isEditable && (
-          <form onSubmit={handleInvite} className="flex gap-2">
-            <input
-              type="email"
-              placeholder="Email på medlem der skal inviteres"
-              className="input"
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              required
-            />
-            <button className="btn-primary shrink-0">Inviter</button>
-          </form>
+        {isEditable && !showInviteForm && (
+          <button className="btn-secondary" onClick={() => setShowInviteForm(true)}>
+            + Tilføj deltager
+          </button>
+        )}
+
+        {isEditable && showInviteForm && (
+          <>
+            <form onSubmit={handleInvite} className="flex flex-wrap gap-2">
+              <select
+                className="input"
+                value={selectedInviteId}
+                onChange={(e) => setSelectedInviteId(e.target.value)}
+                required
+              >
+                <option value="">Vælg person</option>
+                {availableProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.email})
+                  </option>
+                ))}
+              </select>
+              <button className="btn-primary shrink-0" disabled={!selectedInviteId}>
+                Tilføj
+              </button>
+              <button
+                type="button"
+                className="btn-secondary shrink-0"
+                onClick={() => {
+                  setShowInviteForm(false);
+                  setSelectedInviteId('');
+                  setInviteError(null);
+                }}
+              >
+                Annuller
+              </button>
+            </form>
+            {availableProfiles.length === 0 && (
+              <p className="mt-2 text-xs text-river-400">
+                Alle med en bruger i appen er allerede medlem af rejsen.
+              </p>
+            )}
+          </>
         )}
         {inviteError && <p className="mt-2 text-sm text-red-600">{inviteError}</p>}
       </div>
