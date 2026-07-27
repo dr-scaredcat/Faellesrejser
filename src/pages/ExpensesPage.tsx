@@ -56,6 +56,12 @@ export default function ExpensesPage() {
     setSelectedParticipants(members.map((m) => m.user_id));
   }, [profile, members.length]);
 
+  // Standarddato for en ny udgift er rejsens første dag, ikke dags dato —
+  // man logger ofte udgifter efter turen, ikke live undervejs.
+  useEffect(() => {
+    setDate(trip?.start_date ?? new Date().toISOString().slice(0, 10));
+  }, [trip?.start_date]);
+
   async function loadCategories() {
     const { data } = await supabase.from('expense_categories').select('*').order('sort_order');
     const list = (data as ExpenseCategory[]) ?? [];
