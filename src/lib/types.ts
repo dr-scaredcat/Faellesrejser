@@ -87,6 +87,13 @@ export interface Expense {
   participant_ids?: string[];
 }
 
+export interface ExpenseCategory {
+  id: string;
+  name: string;
+  sort_order: number;
+  created_at: string;
+}
+
 export interface DrivingLog {
   id: string;
   trip_id: string;
@@ -135,12 +142,3 @@ export interface SailingTime {
   sail_date: string;
   profile?: Profile;
 }
-
-export const EXPENSE_CATEGORIES = [
-  'Mad/Drikke',
-  'Transport',
-  'Overnatning',
-  'Grej',
-  'Sjov',
-  'Diverse',
-] as const;
