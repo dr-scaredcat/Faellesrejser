@@ -125,12 +125,17 @@ export default function PackingListPage() {
       {categories.map((cat) => (
         <div key={cat.id} className="card p-5">
           <h2 className="mb-3 font-semibold text-river-800">{cat.name}</h2>
-          <ul className="mb-3 space-y-2">
-            {(items[cat.id] ?? []).map((item) => {
+          <ul className="mb-3 space-y-0.5">
+            {(items[cat.id] ?? []).map((item, index) => {
               const packedBy = statuses[item.id] ?? [];
               const iPacked = packedBy.some((s) => s.user_id === profile?.id);
               return (
-                <li key={item.id} className="flex items-center justify-between gap-3 text-sm">
+                <li
+                  key={item.id}
+                  className={`flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm ${
+                    index % 2 === 1 ? 'bg-river-50' : ''
+                  }`}
+                >
                   <label className="flex flex-1 items-center gap-2">
                     <input
                       type="checkbox"
@@ -163,7 +168,7 @@ export default function PackingListPage() {
               );
             })}
             {(items[cat.id] ?? []).length === 0 && (
-              <li className="text-sm text-river-400">Ingen genstande endnu.</li>
+              <li className="px-2 text-sm text-river-400">Ingen genstande endnu.</li>
             )}
           </ul>
           {isEditable && (
