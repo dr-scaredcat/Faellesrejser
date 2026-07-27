@@ -27,7 +27,11 @@ export default function PackingListPage() {
     setCategories((cats as PackingCategory[]) ?? []);
 
     const catIds = (cats ?? []).map((c) => c.id);
-    if (catIds.length === 0) return;
+    if (catIds.length === 0) {
+      setItems({});
+      setStatuses({});
+      return;
+    }
 
     const { data: allItems } = await supabase
       .from('packing_items')
@@ -39,10 +43,18 @@ export default function PackingListPage() {
       itemsByCat[item.category_id] = itemsByCat[item.category_id] ?? [];
       itemsByCat[item.category_id].push(item);
     }
+    // Alfabetisk rækkefølge (dansk sortering), så nye genstande automatisk
+    // havner det rigtige sted i listen.
+    for (const catId of Object.keys(itemsByCat)) {
+      itemsByCat[catId].sort((a, b) => a.name.localeCompare(b.name, 'da'));
+    }
     setItems(itemsByCat);
 
     const itemIds = (allItems ?? []).map((i) => i.id);
-    if (itemIds.length === 0) return;
+    if (itemIds.length === 0) {
+      setStatuses({});
+      return;
+    }
 
     const { data: statusData } = await supabase
       .from('packing_item_status')
@@ -102,6 +114,12 @@ export default function PackingListPage() {
     load();
   }
 
+  async function deleteItem(itemId: string) {
+    if (!confirm('Slet denne genstand fra pakkelisten?')) return;
+    await supabase.from('packing_items').delete().eq('id', itemId);
+    load();
+  }
+
   return (
     <div className="space-y-5">
       {categories.map((cat) => (
@@ -112,16 +130,35 @@ export default function PackingListPage() {
               const packedBy = statuses[item.id] ?? [];
               const iPacked = packedBy.some((s) => s.user_id === profile?.id);
               return (
-                <li key={item.id} className="flex items-center justify-between text-sm">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={iPacked} onChange={() => togglePacked(item.id, iPacked)} />
-                    {item.name}
-                  </label>
-                  {packedBy.length > 0 && (
-                    <span className="text-xs text-river-400">
-                      Pakket af {packedBy.map((s) => namesById[s.user_id] ?? '?').join(', ')}
+                <li key={item.id} className="flex items-center justify-between gap-3 text-sm">
+                  <label className="flex flex-1 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={iPacked}
+                      onChange={() => togglePacked(item.id, iPacked)}
+                    />
+                    <span
+                      className="cursor-pointer select-none"
+                      onClick={() => togglePacked(item.id, iPacked)}
+                    >
+                      {item.name}
                     </span>
-                  )}
+                  </label>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {packedBy.length > 0 && (
+                      <span className="text-xs text-river-400">
+                        Pakket af {packedBy.map((s) => namesById[s.user_id] ?? '?').join(', ')}
+                      </span>
+                    )}
+                    {isEditable && (
+                      <button
+                        className="text-xs text-red-500 hover:underline"
+                        onClick={() => deleteItem(item.id)}
+                      >
+                        Slet
+                      </button>
+                    )}
+                  </div>
                 </li>
               );
             })}
