@@ -117,19 +117,6 @@ export default function StatisticsPage() {
   const referencePrediction =
     historicalModel && referenceKm > 0 ? predictTime(historicalModel, referenceKm) : null;
 
-  const daysWithFlow = withDistance.filter((st) => st.flow_ratio != null).length;
-
-  /**
-   * Oversætter modellens koefficient til noget, man kan forholde sig til:
-   * hvor meget hurtigere går det med 10% mere vand i åen.
-   */
-  const flowEffect = useMemo(() => {
-    if (!historicalModel?.usesFlow || historicalModel.flowCoefficient == null) return null;
-    const deltaPace = historicalModel.flowCoefficient * Math.log(1.1);
-    const relativ = -(deltaPace / historicalModel.paceHoursPerKm) * 100;
-    return relativ;
-  }, [historicalModel]);
-
   function percentDiff(current: number, historical: number): number | null {
     if (!historical) return null;
     return ((current - historical) / historical) * 100;
@@ -174,6 +161,48 @@ export default function StatisticsPage() {
 
   return (
     <div className="space-y-8">
+      <div>
+        <h2 className="mb-3 font-semibold text-river-800">Denne rejse</h2>
+        {hasCurrentTripData ? (
+          <div className="grid gap-4 sm:grid-cols-3">
+            <StatCard label="Samlet sejllængde" value={`${currentTripTotals.totalKm.toFixed(1)} km`} />
+            <StatCard label="Samlet sejltid (ren)" value={formatHours(currentTripTotals.totalSailingHours)} />
+            <StatCard
+              label="Samlet tid inkl. pauser"
+              value={formatHours(currentTripTotals.totalWithPauseHours)}
+            />
+            <StatCard
+              label="Gennemsnitshastighed"
+              value={currentModel ? formatKmT(currentModel.meanSpeedKmH) : '–'}
+              sub={
+                currentModel && historicalModel
+                  ? formatPercentDiff(
+                      percentDiff(currentModel.meanSpeedKmH, historicalModel.meanSpeedKmH) ?? 0
+                    )
+                  : undefined
+              }
+            />
+            <StatCard
+              label="Gennemsnitshastighed inkl. pauser"
+              value={currentPauseModel ? formatKmT(currentPauseModel.meanSpeedKmH) : '–'}
+              sub={
+                currentPauseModel && historicalPauseModel
+                  ? formatPercentDiff(
+                      percentDiff(currentPauseModel.meanSpeedKmH, historicalPauseModel.meanSpeedKmH) ?? 0
+                    )
+                  : undefined
+              }
+            />
+            <StatCard label="Antal loggede sejldage" value={`${currentTripSailingTimes.length}`} />
+          </div>
+        ) : (
+          <div className="card p-8 text-center text-river-400">
+            Ingen sejltider er logget på denne rejse endnu. Tilføj data på "Sejltider"-siden for at se
+            rejsens egne tal her, sammenlignet med de historiske.
+          </div>
+        )}
+      </div>
+
       <div>
         <h2 className="mb-3 font-semibold text-river-800">Historiske data (alle Gudenå-ture)</h2>
         <div className="grid gap-4 sm:grid-cols-3">
@@ -222,82 +251,6 @@ export default function StatisticsPage() {
           logget samme (eller overlappende) stræk. Hastighed og tidsestimater bruger derimod alle
           registreringer hver for sig, vægtet efter hvor langt hvert stræk er.
         </p>
-      </div>
-
-      <div className="card p-5">
-        <h3 className="mb-2 font-semibold text-river-800">Vandføring</h3>
-        {daysWithFlow === 0 ? (
-          <p className="text-sm text-river-500">
-            Der er endnu ikke hentet vandføringsdata for nogen af de loggede sejldage. Kør
-            hent-vandfoering-funktionen for at fylde historikken op.
-          </p>
-        ) : historicalModel?.usesFlow ? (
-          <div className="space-y-1 text-sm text-river-600">
-            <p>
-              Tidsestimaterne er justeret for, hvor meget vand der var i åen. Modellen bygger på{' '}
-              {historicalModel.n} sejldage med kendt vandføring.
-            </p>
-            {flowEffect != null && (
-              <p>
-                Effekt: 10% mere vand end normalt for årstiden svarer til ca.{' '}
-                <strong>{Math.abs(flowEffect).toFixed(1)}%</strong>{' '}
-                {flowEffect >= 0 ? 'kortere' : 'længere'} sejltid.
-              </p>
-            )}
-          </div>
-        ) : (
-          <p className="text-sm text-river-500">
-            {daysWithFlow} af {sailingTimes.length} sejldage har vandføringsdata. Der skal mindst 10 til, før
-            den får lov at indgå i estimaterne — med færre risikerer modellen at forklare tilfældig støj.
-          </p>
-        )}
-        <p className="mt-2 text-xs text-river-400">
-          Vandføringen måles ved Åstedbro (opstrøms Tangeværket) og Ulstrup (nedstrøms). De rå tal kan ikke
-          sammenlignes, da åen fører mange gange så meget vand nede ved Ulstrup — derfor regnes der på
-          forholdet til, hvad der er normalt for årstiden på den enkelte station.
-        </p>
-      </div>
-
-      <div>
-        <h2 className="mb-3 font-semibold text-river-800">Denne rejse</h2>
-        {hasCurrentTripData ? (
-          <div className="grid gap-4 sm:grid-cols-3">
-            <StatCard label="Samlet sejllængde" value={`${currentTripTotals.totalKm.toFixed(1)} km`} />
-            <StatCard label="Samlet sejltid (ren)" value={formatHours(currentTripTotals.totalSailingHours)} />
-            <StatCard
-              label="Samlet tid inkl. pauser"
-              value={formatHours(currentTripTotals.totalWithPauseHours)}
-            />
-            <StatCard
-              label="Gennemsnitshastighed"
-              value={currentModel ? formatKmT(currentModel.meanSpeedKmH) : '–'}
-              sub={
-                currentModel && historicalModel
-                  ? formatPercentDiff(
-                      percentDiff(currentModel.meanSpeedKmH, historicalModel.meanSpeedKmH) ?? 0
-                    )
-                  : undefined
-              }
-            />
-            <StatCard
-              label="Gennemsnitshastighed inkl. pauser"
-              value={currentPauseModel ? formatKmT(currentPauseModel.meanSpeedKmH) : '–'}
-              sub={
-                currentPauseModel && historicalPauseModel
-                  ? formatPercentDiff(
-                      percentDiff(currentPauseModel.meanSpeedKmH, historicalPauseModel.meanSpeedKmH) ?? 0
-                    )
-                  : undefined
-              }
-            />
-            <StatCard label="Antal loggede sejldage" value={`${currentTripSailingTimes.length}`} />
-          </div>
-        ) : (
-          <div className="card p-8 text-center text-river-400">
-            Ingen sejltider er logget på denne rejse endnu. Tilføj data på "Sejltider"-siden for at se
-            rejsens egne tal her, sammenlignet med de historiske.
-          </div>
-        )}
       </div>
 
       {hasCurrentTripData && (
@@ -371,6 +324,13 @@ export default function StatisticsPage() {
             er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på siden ({historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}).
             Stemmer de to kolonner overens — mere vand giver en positiv afvigelse begge steder — er det et
             tegn på, at vandføringen rent faktisk driver farten.
+            {historicalModel && !historicalModel.usesFlow && (
+              <>
+                {' '}
+                Estimaterne ovenfor bruger endnu ikke vandføringen — det kræver mindst 10 sejldage med kendt
+                vandføring, og der er kun {historicalModel.n} registreringer med data indtil videre.
+              </>
+            )}
           </p>
         </div>
       )}
