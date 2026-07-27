@@ -22,6 +22,12 @@ export default function DrivingPage() {
     if (trip) load();
   }, [trip?.id]);
 
+  // Standarddato for en ny registrering er rejsens første dag, ikke dags
+  // dato — man logger typisk kørsel efterfølgende, ofte for hele turen.
+  useEffect(() => {
+    setLogDate(trip?.start_date ?? new Date().toISOString().slice(0, 10));
+  }, [trip?.start_date]);
+
   async function load() {
     if (!trip) return;
     const { data } = await supabase
