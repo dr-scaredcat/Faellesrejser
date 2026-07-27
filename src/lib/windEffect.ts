@@ -189,10 +189,26 @@ export function windEffect(
   return { tailwindMs: tailwind, crosswindMs: crosswind, angleDegrees: angle };
 }
 
-/** Kort beskrivelse til visning: "Modvind 4,2 m/s". */
+/**
+ * Kort beskrivelse til visning: "Modvind 4,2 m/s".
+ *
+ * Ligger vinden på tværs, er komposanten langs ruten lille, selvom det godt
+ * kan blæse kraftigt. Så siger vi "sidevind" i stedet — det er mere ærligt
+ * end at melde ingen effekt, for en tværvind koster stadig kræfter på at
+ * holde kursen, selvom den hverken skubber på eller bremser.
+ */
 export function describeWindEffect(effect: WindEffect): string {
-  const styrke = Math.abs(effect.tailwindMs);
-  if (styrke < 0.5) return 'Ingen effekt langs ruten';
-  const retning = effect.tailwindMs > 0 ? 'Medvind' : 'Modvind';
-  return `${retning} ${styrke.toFixed(1)} m/s`;
+  const langs = Math.abs(effect.tailwindMs);
+  const paaTvaers = Math.abs(effect.crosswindMs);
+
+  if (langs >= 0.5) {
+    const retning = effect.tailwindMs > 0 ? 'Medvind' : 'Modvind';
+    return `${retning} ${langs.toFixed(1)} m/s`;
+  }
+
+  if (paaTvaers >= 0.5) {
+    return `Sidevind ${paaTvaers.toFixed(1)} m/s`;
+  }
+
+  return 'Næsten vindstille';
 }
