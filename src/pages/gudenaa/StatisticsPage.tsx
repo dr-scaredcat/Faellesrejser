@@ -4,13 +4,14 @@ import { useTrip } from '../../context/TripContext';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { computeRoutePlanDaySegments, segmentBetween, sortStops } from '../../lib/gudenaa';
 import { computeDedupedTotals } from '../../lib/gudenaaStats';
-import { confidenceInterval95, formatHours, formatKmT } from '../../lib/stats';
-import type { RoutePlan, RoutePlanDay, SailingTime, Trip } from '../../lib/types';
+import { formatHours, formatKmT } from '../../lib/stats';
+import { fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
+import type { RoutePlan, RoutePlanDay, SailingTimeWithFlow, Trip } from '../../lib/types';
 
 export default function StatisticsPage() {
   const { trip } = useTrip();
   const { stops, loading: stopsLoading } = useGudenaaStops();
-  const [sailingTimes, setSailingTimes] = useState<SailingTime[]>([]);
+  const [sailingTimes, setSailingTimes] = useState<SailingTimeWithFlow[]>([]);
   const [gudenaaTrips, setGudenaaTrips] = useState<Trip[]>([]);
   const [routePlans, setRoutePlans] = useState<RoutePlan[]>([]);
   const [routePlanDays, setRoutePlanDays] = useState<RoutePlanDay[]>([]);
@@ -22,13 +23,18 @@ export default function StatisticsPage() {
 
   async function load() {
     setLoading(true);
-    const [{ data: sailData }, { data: tripData }, { data: planData }, { data: dayData }] = await Promise.all([
-      supabase.from('gudenaa_sailing_times').select('*, profile:profiles(*)'),
-      supabase.from('trips').select('*').eq('trip_type', 'gudenaa'),
-      supabase.from('gudenaa_route_plans').select('*'),
-      supabase.from('gudenaa_route_plan_days').select('*'),
-    ]);
-    setSailingTimes((sailData as unknown as SailingTime[]) ?? []);
+    const [{ data: sailData }, { data: tripData }, { data: planData }, { data: dayData }] =
+      await Promise.all([
+        // Viewet leverer sejltiderne sammen med dagens vandføring, normaliseret
+        // mod hvad der er normalt for årstiden på den enkelte målestation.
+        // Bemærk: ingen profil-join her. Den var der før, men blev aldrig brugt,
+        // og PostgREST kan ikke altid udlede relationer henover et view.
+        supabase.from('sailing_times_with_flow').select('*'),
+        supabase.from('trips').select('*').eq('trip_type', 'gudenaa'),
+        supabase.from('gudenaa_route_plans').select('*'),
+        supabase.from('gudenaa_route_plan_days').select('*'),
+      ]);
+    setSailingTimes((sailData as unknown as SailingTimeWithFlow[]) ?? []);
     setGudenaaTrips((tripData as Trip[]) ?? []);
     setRoutePlans((planData as RoutePlan[]) ?? []);
     setRoutePlanDays((dayData as RoutePlanDay[]) ?? []);
@@ -42,7 +48,7 @@ export default function StatisticsPage() {
     return map;
   }, [gudenaaTrips]);
 
-  // Rå per-registrering-data. Bruges til gennemsnitsfart og highlights — her
+  // Rå per-registrering-data. Bruges til tempo-modellen og highlights — her
   // skal HVER registrering tælle for sig, uanset om flere har logget samme
   // (eller overlappende) stræk.
   const withDistance = useMemo(
@@ -51,6 +57,7 @@ export default function StatisticsPage() {
         ...st,
         km: segmentBetween(sorted, st.start_stop_id, st.end_stop_id).km,
       })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [sailingTimes, stops]
   );
 
@@ -71,19 +78,54 @@ export default function StatisticsPage() {
     [stops, currentTripSailingTimes]
   );
 
-  function speedsFrom(list: typeof withDistance, field: 'sailing_time_hours' | 'total_time_hours') {
-    return list.filter((st) => st.km > 0 && st[field] > 0).map((st) => st.km / st[field]);
+  function modelFrom(
+    list: typeof withDistance,
+    field: 'sailing_time_hours' | 'total_time_hours'
+  ): PaceModel | null {
+    return fitPaceModel(
+      list.map((st) => ({
+        distanceKm: st.km,
+        hours: st[field],
+        flowRatio: st.flow_ratio ?? null,
+      }))
+    );
   }
 
-  const historicalSpeeds = speedsFrom(withDistance, 'sailing_time_hours');
-  const historicalSpeedsWithPauses = speedsFrom(withDistance, 'total_time_hours');
-  const currentSpeeds = speedsFrom(currentTripWithDistance, 'sailing_time_hours');
-  const currentSpeedsWithPauses = speedsFrom(currentTripWithDistance, 'total_time_hours');
+  const historicalModel = useMemo(() => modelFrom(withDistance, 'sailing_time_hours'), [withDistance]);
+  const historicalPauseModel = useMemo(() => modelFrom(withDistance, 'total_time_hours'), [withDistance]);
+  const currentModel = useMemo(
+    () => modelFrom(currentTripWithDistance, 'sailing_time_hours'),
+    [currentTripWithDistance]
+  );
+  const currentPauseModel = useMemo(
+    () => modelFrom(currentTripWithDistance, 'total_time_hours'),
+    [currentTripWithDistance]
+  );
 
-  const speedCI = confidenceInterval95(historicalSpeeds);
-  const speedWithPausesCI = confidenceInterval95(historicalSpeedsWithPauses);
-  const currentSpeedCI = confidenceInterval95(currentSpeeds);
-  const currentSpeedWithPausesCI = confidenceInterval95(currentSpeedsWithPauses);
+  // Referencedistance til prædiktionseksemplet: medianen af de dage, vi rent
+  // faktisk har logget. Så bliver eksemplet noget, I kan genkende.
+  const referenceKm = useMemo(() => {
+    const distances = withDistance.map((st) => st.km).filter((km) => km > 0).sort((a, b) => a - b);
+    if (distances.length === 0) return 0;
+    const mid = Math.floor(distances.length / 2);
+    return distances.length % 2 === 0 ? (distances[mid - 1] + distances[mid]) / 2 : distances[mid];
+  }, [withDistance]);
+
+  const referencePrediction =
+    historicalModel && referenceKm > 0 ? predictTime(historicalModel, referenceKm) : null;
+
+  const daysWithFlow = withDistance.filter((st) => st.flow_ratio != null).length;
+
+  /**
+   * Oversætter modellens koefficient til noget, man kan forholde sig til:
+   * hvor meget hurtigere går det med 10% mere vand i åen.
+   */
+  const flowEffect = useMemo(() => {
+    if (!historicalModel?.usesFlow || historicalModel.flowCoefficient == null) return null;
+    const deltaPace = historicalModel.flowCoefficient * Math.log(1.1);
+    const relativ = -(deltaPace / historicalModel.paceHoursPerKm) * 100;
+    return relativ;
+  }, [historicalModel]);
 
   function percentDiff(current: number, historical: number): number | null {
     if (!historical) return null;
@@ -135,15 +177,30 @@ export default function StatisticsPage() {
           <StatCard label="Samlet tid inkl. pauser" value={formatHours(historicalTotals.totalWithPauseHours)} />
           <StatCard
             label="Gennemsnitshastighed"
-            value={historicalSpeeds.length > 0 ? formatKmT(speedCI.mean) : '–'}
-            sub={speedCI.n >= 2 ? `95% CI: [${formatKmT(speedCI.low)} : ${formatKmT(speedCI.high)}]` : undefined}
+            value={historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}
+            sub={
+              historicalModel
+                ? `Samlet distance delt med samlet tid · ${historicalModel.n} registreringer`
+                : undefined
+            }
           />
           <StatCard
             label="Gennemsnitshastighed inkl. pauser"
-            value={historicalSpeedsWithPauses.length > 0 ? formatKmT(speedWithPausesCI.mean) : '–'}
+            value={historicalPauseModel ? formatKmT(historicalPauseModel.meanSpeedKmH) : '–'}
             sub={
-              speedWithPausesCI.n >= 2
-                ? `95% CI: [${formatKmT(speedWithPausesCI.low)} : ${formatKmT(speedWithPausesCI.high)}]`
+              historicalPauseModel
+                ? `Samlet distance delt med samlet tid · ${historicalPauseModel.n} registreringer`
+                : undefined
+            }
+          />
+          <StatCard
+            label={referenceKm > 0 ? `Forventet tid, ${referenceKm.toFixed(1)} km` : 'Forventet tid'}
+            value={referencePrediction ? formatHours(referencePrediction.hours) : '–'}
+            sub={
+              referencePrediction
+                ? `95% prædiktion: [${formatHours(referencePrediction.low)} : ${formatHours(
+                    referencePrediction.high
+                  )}]`
                 : undefined
             }
           />
@@ -157,8 +214,42 @@ export default function StatisticsPage() {
         </div>
         <p className="mt-2 text-xs text-river-400">
           "Samlet sejllængde" og "Samlet tid" tæller hvert stræk på en rejse med én gang, selv hvis flere har
-          logget samme (eller overlappende) stræk. Gennemsnitshastighederne bruger derimod alle registreringer
-          hver for sig.
+          logget samme (eller overlappende) stræk. Hastighed og tidsestimater bruger derimod alle
+          registreringer hver for sig, vægtet efter hvor langt hvert stræk er.
+        </p>
+      </div>
+
+      <div className="card p-5">
+        <h3 className="mb-2 font-semibold text-river-800">Vandføring</h3>
+        {daysWithFlow === 0 ? (
+          <p className="text-sm text-river-500">
+            Der er endnu ikke hentet vandføringsdata for nogen af de loggede sejldage. Kør
+            hent-vandfoering-funktionen for at fylde historikken op.
+          </p>
+        ) : historicalModel?.usesFlow ? (
+          <div className="space-y-1 text-sm text-river-600">
+            <p>
+              Tidsestimaterne er justeret for, hvor meget vand der var i åen. Modellen bygger på{' '}
+              {historicalModel.n} sejldage med kendt vandføring.
+            </p>
+            {flowEffect != null && (
+              <p>
+                Effekt: 10% mere vand end normalt for årstiden svarer til ca.{' '}
+                <strong>{Math.abs(flowEffect).toFixed(1)}%</strong>{' '}
+                {flowEffect >= 0 ? 'kortere' : 'længere'} sejltid.
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="text-sm text-river-500">
+            {daysWithFlow} af {sailingTimes.length} sejldage har vandføringsdata. Der skal mindst 10 til, før
+            den får lov at indgå i estimaterne — med færre risikerer modellen at forklare tilfældig støj.
+          </p>
+        )}
+        <p className="mt-2 text-xs text-river-400">
+          Vandføringen måles ved Åstedbro (opstrøms Tangeværket) og Ulstrup (nedstrøms). De rå tal kan ikke
+          sammenlignes, da åen fører mange gange så meget vand nede ved Ulstrup — derfor regnes der på
+          forholdet til, hvad der er normalt for årstiden på den enkelte station.
         </p>
       </div>
 
@@ -174,20 +265,22 @@ export default function StatisticsPage() {
             />
             <StatCard
               label="Gennemsnitshastighed"
-              value={currentSpeeds.length > 0 ? formatKmT(currentSpeedCI.mean) : '–'}
+              value={currentModel ? formatKmT(currentModel.meanSpeedKmH) : '–'}
               sub={
-                currentSpeeds.length > 0 && speedCI.mean > 0
-                  ? formatPercentDiff(percentDiff(currentSpeedCI.mean, speedCI.mean) ?? 0)
+                currentModel && historicalModel
+                  ? formatPercentDiff(
+                      percentDiff(currentModel.meanSpeedKmH, historicalModel.meanSpeedKmH) ?? 0
+                    )
                   : undefined
               }
             />
             <StatCard
               label="Gennemsnitshastighed inkl. pauser"
-              value={currentSpeedsWithPauses.length > 0 ? formatKmT(currentSpeedWithPausesCI.mean) : '–'}
+              value={currentPauseModel ? formatKmT(currentPauseModel.meanSpeedKmH) : '–'}
               sub={
-                currentSpeedsWithPauses.length > 0 && speedWithPausesCI.mean > 0
+                currentPauseModel && historicalPauseModel
                   ? formatPercentDiff(
-                      percentDiff(currentSpeedWithPausesCI.mean, speedWithPausesCI.mean) ?? 0
+                      percentDiff(currentPauseModel.meanSpeedKmH, historicalPauseModel.meanSpeedKmH) ?? 0
                     )
                   : undefined
               }
