@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { sortStops } from '../../lib/gudenaa';
 import { DatePicker } from '../../components/DatePicker';
+import { DurationHoursMinutesInput } from '../../components/DurationHoursMinutesInput';
 import type { SailingTime } from '../../lib/types';
 
 export default function SailingTimesPage() {
@@ -26,6 +27,12 @@ export default function SailingTimesPage() {
     if (trip) load();
   }, [trip?.id]);
 
+  // Standarddato for en ny registrering er rejsens første dag, ikke dags
+  // dato — man logger typisk sejltid efter turen, ikke live undervejs.
+  useEffect(() => {
+    setSailDate(trip?.start_date ?? new Date().toISOString().slice(0, 10));
+  }, [trip?.start_date]);
+
   async function load() {
     if (!trip) return;
     const { data } = await supabase
@@ -38,7 +45,7 @@ export default function SailingTimesPage() {
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!trip || !profile || !startStopId || !endStopId) return;
+    if (!trip || !profile || !startStopId || !endStopId || !totalTime || !sailingTime) return;
     await supabase.from('gudenaa_sailing_times').insert({
       trip_id: trip.id,
       user_id: profile.id,
@@ -121,26 +128,12 @@ export default function SailingTimesPage() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="label">Total tid (t), inkl. pauser</label>
-              <input
-                type="number"
-                step="0.01"
-                className="input"
-                value={totalTime}
-                onChange={(e) => setTotalTime(e.target.value)}
-                required
-              />
+              <label className="label">Total tid, inkl. pauser</label>
+              <DurationHoursMinutesInput value={totalTime} onChange={setTotalTime} />
             </div>
             <div>
-              <label className="label">Ren sejltid (t)</label>
-              <input
-                type="number"
-                step="0.01"
-                className="input"
-                value={sailingTime}
-                onChange={(e) => setSailingTime(e.target.value)}
-                required
-              />
+              <label className="label">Ren sejltid</label>
+              <DurationHoursMinutesInput value={sailingTime} onChange={setSailingTime} />
             </div>
           </div>
           <DatePicker value={sailDate} onChange={setSailDate} />
