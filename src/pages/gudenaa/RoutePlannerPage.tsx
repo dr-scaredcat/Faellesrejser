@@ -8,7 +8,7 @@ import { formatHours } from '../../lib/stats';
 import { groupSailingDays } from '../../lib/gudenaaStats';
 import { describeModel, fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
 import { resultantCourse, windEffect } from '../../lib/windEffect';
-import { suggestRoute, type RouteObjective } from '../../lib/routeSuggestion';
+import { suggestRoute, type RouteObjective, type RouteSuggestion } from '../../lib/routeSuggestion';
 import type { GudenaaStop, RoutePlan, RoutePlanDay, SailingTimeWithFlow } from '../../lib/types';
 
 export default function RoutePlannerPage() {
@@ -30,6 +30,11 @@ export default function RoutePlannerPage() {
   const [objective, setObjective] = useState<RouteObjective>('even');
   const [maxHours, setMaxHours] = useState('');
   const [suggesting, setSuggesting] = useState(false);
+
+  // Forslaget skrives IKKE til databasen med det samme. Det vises til
+  // godkendelse først, så en allerede udfyldt rute ikke bliver overskrevet af
+  // et uheld — man skal aktivt trykke "Godkend forslag".
+  const [suggestionPreview, setSuggestionPreview] = useState<RouteSuggestion | null>(null);
 
   useEffect(() => {
     if (trip) load();
@@ -144,7 +149,11 @@ export default function RoutePlannerPage() {
     if (ok) load();
   }
 
-  async function applySuggestion() {
+  /**
+   * Beregner et forslag og viser det til godkendelse. Skriver IKKE noget til
+   * databasen — det sker først når `confirmSuggestion` kaldes.
+   */
+  function computeSuggestion() {
     if (!startStopId || !targetStopId) return;
 
     const cap = maxHours.trim() ? Number(maxHours) : null;
@@ -163,6 +172,17 @@ export default function RoutePlannerPage() {
       return;
     }
 
+    setSuggestionPreview(result.suggestion);
+  }
+
+  function dismissSuggestion() {
+    setSuggestionPreview(null);
+  }
+
+  /** Skriver det godkendte forslag ind i ruteplanen. */
+  async function confirmSuggestion() {
+    if (!suggestionPreview) return;
+
     setSuggesting(true);
     const planResult = await ensurePlan();
     if (!planResult) {
@@ -170,7 +190,7 @@ export default function RoutePlannerPage() {
       return;
     }
 
-    for (const suggested of result.suggestion.days) {
+    for (const suggested of suggestionPreview.days) {
       const row = planResult.days.find((d) => d.day_number === suggested.dayNumber);
       if (!row) continue;
       const { ok } = await mutate(
@@ -187,11 +207,12 @@ export default function RoutePlannerPage() {
 
     setSuggesting(false);
     showToast(
-      `Ruten er delt i ${result.suggestion.days.length} dage. Længste dag er ${formatHours(
-        result.suggestion.longestDayHours
-      )}. Du kan stadig rette hver dag manuelt.`,
+      `Ruten er delt i ${suggestionPreview.days.length} dage. Længste dag er ${formatHours(
+        suggestionPreview.longestDayHours
+      )}.`,
       'success'
     );
+    setSuggestionPreview(null);
     load();
   }
 
@@ -415,11 +436,98 @@ export default function RoutePlannerPage() {
 
           <button
             className="btn-secondary"
-            onClick={applySuggestion}
-            disabled={!startStopId || !targetStopId || suggesting}
+            onClick={computeSuggestion}
+            disabled={!startStopId || !targetStopId}
           >
-            {suggesting ? 'Beregner…' : 'Foreslå rute'}
+            Foreslå rute
           </button>
+        </div>
+      )}
+
+      {suggestionPreview && (
+        <div className="card space-y-4 border-2 border-river-300 p-5">
+          <div>
+            <h2 className="font-semibold text-river-800">Forslag til rute</h2>
+            <p className="mt-1 text-sm text-river-500">
+              Ruten er ikke gemt endnu. Gennemgå forslaget herunder, og godkend eller afslå det — jeres
+              nuværende rute ændres ikke, før du trykker "Godkend forslag".
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            {suggestionPreview.days.map((forslagsdag) => {
+              const forslagEstimat = estimate(pureModel, forslagsdag.distanceKm);
+              const eksisterende = dayResults.find((d) => d.day === forslagsdag.dayNumber);
+              const eksisterendeUdfyldt = !!eksisterende?.to;
+              const eksisterendeEstimat = eksisterendeUdfyldt
+                ? estimate(pureModel, eksisterende!.km)
+                : null;
+
+              const kmDiff = eksisterendeUdfyldt ? forslagsdag.distanceKm - eksisterende!.km : null;
+              const timerDiff =
+                forslagEstimat && eksisterendeEstimat
+                  ? forslagEstimat.hours - eksisterendeEstimat.hours
+                  : null;
+
+              return (
+                <div key={forslagsdag.dayNumber} className="rounded-lg border border-river-100 p-3">
+                  <p className="mb-1 text-sm font-medium text-river-800">Dag {forslagsdag.dayNumber}</p>
+
+                  <p className="text-sm text-river-600">
+                    <span className="text-river-400">Forslag:</span> {forslagsdag.startStopName} →{' '}
+                    {forslagsdag.endStopName} · {forslagsdag.distanceKm.toFixed(1)} km · skematid ca.{' '}
+                    {formatHours(forslagsdag.sailTimeHours)}
+                    {forslagEstimat && (
+                      <> · forventet ca. {formatHours(forslagEstimat.hours)}</>
+                    )}
+                  </p>
+
+                  {eksisterendeUdfyldt && eksisterende ? (
+                    <>
+                      <p className="mt-1 text-sm text-river-500">
+                        <span className="text-river-400">Nuværende:</span>{' '}
+                        {stopById[eksisterende.from]?.name ?? '—'} →{' '}
+                        {stopById[eksisterende.to as string]?.name ?? '—'} ·{' '}
+                        {eksisterende.km.toFixed(1)} km
+                        {eksisterendeEstimat && (
+                          <> · forventet ca. {formatHours(eksisterendeEstimat.hours)}</>
+                        )}
+                      </p>
+                      <p className="mt-1 text-xs text-river-400">
+                        Forskel: {kmDiff != null && kmDiff >= 0 ? '+' : ''}
+                        {kmDiff?.toFixed(1)} km
+                        {timerDiff != null && (
+                          <>
+                            {' · '}
+                            {timerDiff >= 0 ? '+' : '-'}
+                            {formatHours(Math.abs(timerDiff))} {timerDiff >= 0 ? 'længere' : 'kortere'}
+                          </>
+                        )}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mt-1 text-xs text-river-400">
+                      Dagen er ikke udfyldt i den nuværende rute endnu.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-2">
+            <button className="btn-primary" onClick={confirmSuggestion} disabled={suggesting}>
+              {suggesting ? 'Gemmer…' : 'Godkend forslag'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={dismissSuggestion}
+              disabled={suggesting}
+            >
+              Afslå
+            </button>
+          </div>
         </div>
       )}
 
