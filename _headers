@@ -1,0 +1,29 @@
+# Cloudflare Workers Static Assets læser denne fil fra samme mappe som
+# index.html (altså public/ i Vite-projektet, som kopieres ind i dist/ ved
+# build) og bruger den til at sætte Cache-Control-headers.
+#
+# HVORFOR DENNE FIL ER NØDVENDIG
+#
+# Med not_found_handling = "single-page-application" bliver index.html
+# serveret for enhver ukendt sti (fx /rejser/123/pakkeliste). Cloudflare
+# cacher det svar pr. fulde URL. Da index.html ikke har noget hash i
+# filnavnet, ved Cloudflare ikke, at indholdet har ændret sig efter en ny
+# deployment — så en sti, der er besøgt før, bliver ved med at få den gamle
+# index.html med referencer til den gamle, nu slettede, JS-bundle.
+#
+# Vites øvrige output (i /assets/) HAR et indholds-hash i filnavnet, så de
+# kan trygt caches for evigt: ændrer indholdet sig, ændrer filnavnet sig også.
+
+# Selve SPA-skallen: aldrig cache, hverken i browseren eller hos Cloudflare.
+/index.html
+  Cache-Control: no-cache
+
+# Enhver anden ukendt sti falder også tilbage til index.html via SPA-fallback
+# og skal have samme behandling.
+/*
+  Cache-Control: no-cache
+
+# Hash-navngivne aktiver: cache for evigt. Et nyt build giver nye filnavne,
+# så der er ingen risiko for at få en forældet fil serveret.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
