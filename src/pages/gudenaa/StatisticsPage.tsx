@@ -188,7 +188,7 @@ export default function StatisticsPage() {
       <div>
         <h2 className="mb-3 font-semibold text-river-800">Denne rejse</h2>
         {hasCurrentTripData ? (
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-3">
             <StatCard label="Samlet sejllængde" value={`${currentTripTotals.totalKm.toFixed(1)} km`} />
             <StatCard label="Samlet sejltid (ren)" value={formatHours(currentTripTotals.totalSailingHours)} />
             <StatCard
@@ -237,7 +237,7 @@ export default function StatisticsPage() {
 
       <div>
         <h2 className="mb-3 font-semibold text-river-800">Historiske data (alle Gudenå-ture)</h2>
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-3">
           <StatCard label="Samlet sejllængde" value={`${historicalTotals.totalKm.toFixed(1)} km`} />
           <StatCard label="Samlet sejltid (ren)" value={formatHours(historicalTotals.totalSailingHours)} />
           <StatCard label="Samlet tid inkl. pauser" value={formatHours(historicalTotals.totalWithPauseHours)} />
@@ -301,12 +301,13 @@ export default function StatisticsPage() {
             samlet til én. Vandføring og vind er sammenholdt med farten, så I selv kan se sammenhængen.
           </p>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[46rem] text-sm">
+            <table className="w-full min-w-[52rem] text-sm">
               <thead>
                 <tr className="border-b border-river-100 text-left text-xs uppercase tracking-wide text-river-400">
                   <th className="pb-1 pr-3 font-normal">Dato</th>
                   <th className="pb-1 pr-3 font-normal">Stræk</th>
                   <th className="pb-1 pr-3 font-normal">Vandføring</th>
+                  <th className="pb-1 pr-3 font-normal">Sejlretning (vektor)</th>
                   <th className="pb-1 pr-3 font-normal">Vind</th>
                   <th className="pb-1 pr-3 font-normal">Fart</th>
                   <th className="pb-1 font-normal">Ift. historisk snit</th>
@@ -366,13 +367,21 @@ export default function StatisticsPage() {
                         )}
                       </td>
                       <td className="py-1.5 pr-3">
+                        {course?.bearingDegrees != null ? (
+                          <Arrow
+                            degrees={course.bearingDegrees}
+                            className="text-river-600"
+                            title={`Ruten gik mod ${compassFromDegrees(course.bearingDegrees) ?? '?'}`}
+                          />
+                        ) : (
+                          <span className="text-river-400">
+                            {course && course.missingBearings > 0 ? 'retning mangler' : '–'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-1.5 pr-3">
                         {effect ? (
                           <div className="flex items-center gap-2">
-                            <Arrow
-                              degrees={course?.bearingDegrees ?? 0}
-                              className="text-river-600"
-                              title={`Ruten gik mod ${compassFromDegrees(course?.bearingDegrees) ?? '?'}`}
-                            />
                             <Arrow
                               degrees={(dag.windDirDegrees ?? 0) + 180}
                               className="text-sand-600"
@@ -390,8 +399,6 @@ export default function StatisticsPage() {
                               {describeWindEffect(effect)}
                             </span>
                           </div>
-                        ) : course && course.missingBearings > 0 ? (
-                          <span className="text-river-400">retning mangler</span>
                         ) : (
                           <span className="text-river-400">ukendt</span>
                         )}
@@ -441,37 +448,51 @@ export default function StatisticsPage() {
       )}
 
       {(longestDay || shortestDay || stopUsage.length > 0 || fastestDay) && (
-        <div className="card p-5">
-          <h3 className="mb-2 font-semibold text-river-800">Highlights</h3>
-          <div className="space-y-1 text-sm text-river-600">
-            {longestDay && (
-              <p>
-                Længste planlagte dag: {stopName(longestDay.fromStopId)} → {stopName(longestDay.toStopId)} (
+        <div className="card space-y-4 p-5">
+          <h3 className="font-semibold text-river-800">Highlights</h3>
+
+          {longestDay && (
+            <div>
+              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Længste planlagte dag</p>
+              <p className="text-sm text-river-600">
+                {stopName(longestDay.fromStopId)} → {stopName(longestDay.toStopId)} (
                 {longestDay.km.toFixed(1)} km, {tripNameById[longestDay.tripId] ?? '—'})
               </p>
-            )}
-            {shortestDay && (
-              <p>
-                Korteste planlagte dag: {stopName(shortestDay.fromStopId)} → {stopName(shortestDay.toStopId)} (
+            </div>
+          )}
+
+          {shortestDay && (
+            <div>
+              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Korteste planlagte dag</p>
+              <p className="text-sm text-river-600">
+                {stopName(shortestDay.fromStopId)} → {stopName(shortestDay.toStopId)} (
                 {shortestDay.km.toFixed(1)} km, {tripNameById[shortestDay.tripId] ?? '—'})
               </p>
-            )}
-            {fastestDay && (
-              <p>
-                Hurtigste dag: {stopName(fastestDay.startStopId)} → {stopName(fastestDay.endStopId)} (
+            </div>
+          )}
+
+          {fastestDay && (
+            <div>
+              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Hurtigste dag</p>
+              <p className="text-sm text-river-600">
+                {stopName(fastestDay.startStopId)} → {stopName(fastestDay.endStopId)} (
                 {formatKmT(fastestDay.km / fastestDay.sailingHours)}, {fastestDay.sailDate})
               </p>
-            )}
-            {slowestDay && (
-              <p>
-                Roligste dag: {stopName(slowestDay.startStopId)} → {stopName(slowestDay.endStopId)} (
+            </div>
+          )}
+
+          {slowestDay && (
+            <div>
+              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Roligste dag</p>
+              <p className="text-sm text-river-600">
+                {stopName(slowestDay.startStopId)} → {stopName(slowestDay.endStopId)} (
                 {formatKmT(slowestDay.km / slowestDay.sailingHours)}, {slowestDay.sailDate})
               </p>
-            )}
-          </div>
+            </div>
+          )}
 
           {stopUsage.length > 0 && (
-            <div className="mt-4">
+            <div>
               <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Mest brugte stop</p>
               <ul className="space-y-0.5 text-sm text-river-600">
                 {stopUsage.slice(0, 5).map(([stopId, count]) => (
