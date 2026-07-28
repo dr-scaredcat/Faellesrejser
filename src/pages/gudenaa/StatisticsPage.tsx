@@ -307,7 +307,12 @@ export default function StatisticsPage() {
                   <th className="pb-1 pr-3 font-normal">Dato</th>
                   <th className="pb-1 pr-3 font-normal">Stræk</th>
                   <th className="pb-1 pr-3 font-normal">Vandføring</th>
-                  <th className="pb-1 pr-3 font-normal">Retning</th>
+                  <th className="pb-1 pr-3 font-normal">
+                    <div>Retning</div>
+                    <div className="mt-0.5 text-[10px] font-normal normal-case tracking-normal text-river-300">
+                      rute · vind
+                    </div>
+                  </th>
                   <th className="pb-1 pr-3 font-normal">Fart</th>
                   <th className="pb-1 font-normal">Ift. snit</th>
                 </tr>
@@ -435,9 +440,10 @@ export default function StatisticsPage() {
           </div>
           <p className="mt-3 text-xs text-river-400">
             "Ift. normalt" er dagens vandføring delt med medianen for samme tid af året på den enkelte
-            målestation — de rå tal kan ikke sammenlignes mellem Åstedbro og Ulstrup. Pilene viser rutens
-            samlede retning og den vej vinden blæste; en tilde foran vindtallet betyder, at ruten bugtede
-            sig meget, eller at vinden drejede i løbet af dagen, så nettoeffekten er usikker.
+            målestation — de rå tal kan ikke sammenlignes mellem Åstedbro og Ulstrup. Under "Retning" viser
+            den første pil rutens samlede retning, og den anden pil den vej vinden blæste (som angivet i
+            kolonneoverskriften); en tilde foran vindtallet betyder, at ruten bugtede sig meget, eller at
+            vinden drejede i løbet af dagen, så nettoeffekten er usikker.
             "Ift. snit" er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på
             siden ({historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}).
             {historicalModel && !historicalModel.usesFlow && (
