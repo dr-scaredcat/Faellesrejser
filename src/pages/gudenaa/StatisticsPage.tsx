@@ -301,16 +301,15 @@ export default function StatisticsPage() {
             samlet til én. Vandføring og vind er sammenholdt med farten, så I selv kan se sammenhængen.
           </p>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[52rem] text-sm">
+            <table className="w-full min-w-[42rem] text-sm">
               <thead>
                 <tr className="border-b border-river-100 text-left text-xs uppercase tracking-wide text-river-400">
                   <th className="pb-1 pr-3 font-normal">Dato</th>
                   <th className="pb-1 pr-3 font-normal">Stræk</th>
                   <th className="pb-1 pr-3 font-normal">Vandføring</th>
-                  <th className="pb-1 pr-3 font-normal">Sejlretning (vektor)</th>
-                  <th className="pb-1 pr-3 font-normal">Vind</th>
+                  <th className="pb-1 pr-3 font-normal">Retning</th>
                   <th className="pb-1 pr-3 font-normal">Fart</th>
-                  <th className="pb-1 font-normal">Ift. historisk snit</th>
+                  <th className="pb-1 font-normal">Ift. snit</th>
                 </tr>
               </thead>
               <tbody>
@@ -367,40 +366,52 @@ export default function StatisticsPage() {
                         )}
                       </td>
                       <td className="py-1.5 pr-3">
-                        {course?.bearingDegrees != null ? (
-                          <Arrow
-                            degrees={course.bearingDegrees}
-                            className="text-river-600"
-                            title={`Ruten gik mod ${compassFromDegrees(course.bearingDegrees) ?? '?'}`}
-                          />
-                        ) : (
-                          <span className="text-river-400">
-                            {course && course.missingBearings > 0 ? 'retning mangler' : '–'}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-1.5 pr-3">
-                        {effect ? (
-                          <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                          {course?.bearingDegrees != null ? (
                             <Arrow
-                              degrees={(dag.windDirDegrees ?? 0) + 180}
+                              degrees={course.bearingDegrees}
+                              className="text-river-600"
+                              title={`Ruten gik mod ${compassFromDegrees(course.bearingDegrees) ?? '?'}`}
+                            />
+                          ) : (
+                            <span className="text-xs text-river-300" aria-hidden="true">
+                              –
+                            </span>
+                          )}
+
+                          {(course?.bearingDegrees != null || dag.windDirDegrees != null) && (
+                            <span className="h-3 w-px bg-river-100" aria-hidden="true" />
+                          )}
+
+                          {dag.windDirDegrees != null ? (
+                            <Arrow
+                              degrees={dag.windDirDegrees + 180}
                               className="text-sand-600"
                               title={`Vinden kom fra ${compassFromDegrees(dag.windDirDegrees) ?? '?'}`}
                             />
-                            <span
-                              className={usikker ? 'text-river-400' : 'text-river-700'}
-                              title={
-                                usikker
-                                  ? 'Ruten skiftede meget retning, eller vinden drejede i løbet af dagen. Tallet er derfor usikkert.'
-                                  : undefined
-                              }
-                            >
-                              {usikker && '~'}
-                              {describeWindEffect(effect)}
+                          ) : (
+                            <span className="text-xs text-river-300" aria-hidden="true">
+                              –
                             </span>
-                          </div>
+                          )}
+                        </div>
+
+                        {effect ? (
+                          <span
+                            className={`block text-xs ${usikker ? 'text-river-400' : 'text-river-600'}`}
+                            title={
+                              usikker
+                                ? 'Ruten skiftede meget retning, eller vinden drejede i løbet af dagen. Tallet er derfor usikkert.'
+                                : undefined
+                            }
+                          >
+                            {usikker && '~'}
+                            {describeWindEffect(effect)}
+                          </span>
+                        ) : course && course.missingBearings > 0 ? (
+                          <span className="block text-xs text-river-400">retning mangler</span>
                         ) : (
-                          <span className="text-river-400">ukendt</span>
+                          <span className="block text-xs text-river-400">ukendt</span>
                         )}
                       </td>
                       <td className="py-1.5 pr-3 text-river-600">
@@ -427,7 +438,7 @@ export default function StatisticsPage() {
             målestation — de rå tal kan ikke sammenlignes mellem Åstedbro og Ulstrup. Pilene viser rutens
             samlede retning og den vej vinden blæste; en tilde foran vindtallet betyder, at ruten bugtede
             sig meget, eller at vinden drejede i løbet af dagen, så nettoeffekten er usikker.
-            "Ift. historisk snit" er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på
+            "Ift. snit" er dagens fart sammenlignet med den samlede gennemsnitsfart øverst på
             siden ({historicalModel ? formatKmT(historicalModel.meanSpeedKmH) : '–'}).
             {historicalModel && !historicalModel.usesFlow && (
               <>
