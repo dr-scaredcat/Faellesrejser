@@ -117,17 +117,65 @@ export interface Settlement {
   created_at: string;
 }
 
+export type EnergyType = 'benzin' | 'diesel' | 'el';
+
+export interface Vehicle {
+  id: string;
+  name: string;
+  energy_type: EnergyType;
+  /** Producentens oplyste kapacitet. Den målte regnes ud af ladningerne. */
+  battery_capacity_kwh: number | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+}
+
+/**
+ * En opladning eller tankning. Kan registreres frit — også hjemme mellem
+ * ture, hvor trip_id er tom.
+ *
+ * `amount` er kWh for el og liter for brændstof; `price_per_unit` er
+ * tilsvarende kr/kWh eller kr/liter.
+ */
+export interface EnergyPurchase {
+  id: string;
+  vehicle_id: string;
+  user_id: string;
+  trip_id: string | null;
+  purchased_on: string;
+  energy_type: EnergyType;
+  amount: number;
+  price_per_unit: number | null;
+  total_cost: number | null;
+  /** Kun for el: ladeprocent før og efter. Bruges til kapacitetsberegningen. */
+  start_soc_percent: number | null;
+  end_soc_percent: number | null;
+  /** kWh målt ved laderen inkluderer ladetab; målt i bilen gør ikke. */
+  measured_at_charger: boolean;
+  location_label: string | null;
+  location_type: 'hjemme' | 'offentlig' | 'arbejde' | 'andet' | null;
+  duration_minutes: number | null;
+  notes: string | null;
+  created_at: string;
+  vehicle?: Vehicle;
+}
+
 export interface DrivingLog {
   id: string;
   trip_id: string;
   user_id: string;
+  vehicle_id: string | null;
+  /** Bevaret af hensyn til gamle registreringer. Brug vehicle_id fremover. */
   vehicle_label: string | null;
   distance_km: number;
-  energy_type: 'benzin' | 'diesel' | 'el';
+  energy_type: EnergyType;
   energy_amount: number;
   log_date: string;
   notes: string | null;
+  /** Udgiften kørslen er lagt ind som. Tom = endnu ikke i regnskabet. */
+  expense_id: string | null;
   profile?: Profile;
+  vehicle?: Vehicle;
 }
 
 export interface GudenaaStop {
