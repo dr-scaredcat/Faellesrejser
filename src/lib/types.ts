@@ -52,18 +52,6 @@ export interface PackingItem {
   created_by: string | null;
 }
 
-/**
- * Én person der har meldt sig som ansvarlig for at medbringe et emne
- * ("Sofie tager teltet"). Flere kan melde sig på samme emne — fx skal alle
- * par selv have soveposer med. Adskilt fra packing_item_status, som handler
- * om hvem der har pakket sin egen del.
- */
-export interface PackingItemAssignee {
-  item_id: string;
-  user_id: string;
-  assigned_at: string;
-}
-
 export interface PackingItemStatus {
   item_id: string;
   user_id: string;
