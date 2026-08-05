@@ -222,6 +222,17 @@ export default function PositionPage() {
     ? (Date.now() - new Date(windInfo.measuredAt).getTime()) / 3_600_000
     : null;
 
+  // DMI's tidsstempler er i UTC, mens vi står i dansk tid — om sommeren to
+  // timer foran. Vi viser derfor målingens klokkeslæt omregnet til dansk tid,
+  // så det kan sammenlignes direkte med uret på telefonen.
+  const windLocalTime = windInfo
+    ? new Intl.DateTimeFormat('da-DK', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Europe/Copenhagen',
+      }).format(new Date(windInfo.measuredAt))
+    : null;
+
   // Til opsummeringen: vindens effekt på netop det næste stræk, som et
   // konkret eksempel på, hvad "medvind"/"modvind" betyder lige nu — resten
   // af strækkerne får hver deres egen beregning nedenfor, ud fra deres egen
@@ -312,8 +323,8 @@ export default function PositionPage() {
           <p className="text-xs text-river-400">
             {windInfo ? (
               <>
-                Vind (senest målt, {windAgeHours != null ? `${windAgeHours.toFixed(1)} t. gammel` : ''})
-                ved {windInfo.station}: {windInfo.speedMs.toFixed(1)} m/s fra{' '}
+                Vind (målt kl. {windLocalTime}) ved {windInfo.station}:{' '}
+                {windInfo.speedMs.toFixed(1)} m/s fra{' '}
                 {compassFromDegrees(windInfo.dirDegrees) ?? '?'}
                 {nextLegWindEffect && (
                   <>
