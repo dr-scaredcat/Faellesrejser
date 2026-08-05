@@ -317,6 +317,7 @@ function MapEditor() {
   const mutate = useMutate();
   const { showToast } = useToast();
   const imgRef = useRef<HTMLImageElement>(null);
+  const { stops, reload: reloadStops } = useGudenaaStops();
 
   const [overviewPath, setOverviewPath] = useState<string | null>(null);
   const [sections, setSections] = useState<GudenaaMapSection[]>([]);
@@ -335,6 +336,11 @@ function MapEditor() {
   const [sectionLabel, setSectionLabel] = useState('');
   const [sectionFile, setSectionFile] = useState<File | null>(null);
   const [savingSection, setSavingSection] = useState(false);
+
+  // Placering af stop på kortet. Er der valgt et stop her, sætter et klik på
+  // kortet dets position i stedet for at tegne et rektangel.
+  const [placingStopId, setPlacingStopId] = useState<string | null>(null);
+  const [computingBearings, setComputingBearings] = useState(false);
 
   useEffect(() => {
     load();
@@ -396,10 +402,105 @@ function MapEditor() {
     return { x: Math.min(100, Math.max(0, x)), y: Math.min(100, Math.max(0, y)) };
   }
 
+  async function placeStop(stopId: string, p: { x: number; y: number }) {
+    const { ok } = await mutate(
+      supabase
+        .from('gudenaa_stops')
+        .update({ map_x_percent: p.x, map_y_percent: p.y })
+        .eq('id', stopId)
+    );
+    if (!ok) return;
+    setPlacingStopId(null);
+    reloadStops();
+  }
+
+  /**
+   * Regner retningen mellem hvert par af på-hinanden-følgende stop ud af
+   * deres placering på kortet, og skriver resultatet til bearing_degrees.
+   *
+   * To ting er afgørende for at det bliver rigtigt:
+   *
+   *  - Kortet skal være nord-op, hvilket det er. Derfor er "op" på billedet
+   *    lig nord, og et almindeligt atan2 giver kompasretningen direkte.
+   *
+   *  - Positionerne er gemt som procent af henholdsvis bredde og højde, som
+   *    IKKE er samme enhed, medmindre billedet er kvadratisk. De ganges
+   *    derfor op med billedets faktiske pixelmål, før retningen beregnes —
+   *    ellers ville et aflangt kort give systematisk skæve retninger.
+   */
+  async function computeBearingsFromMap() {
+    const img = imgRef.current;
+    if (!img || !img.naturalWidth || !img.naturalHeight) {
+      showToast('Kortet er ikke indlæst endnu — prøv igen om et øjeblik.', 'error');
+      return;
+    }
+
+    const sorted = [...stops].sort((a, b) => a.sort_order - b.sort_order);
+    const opdateringer: { id: string; bearing: number }[] = [];
+
+    for (let i = 1; i < sorted.length; i++) {
+      const fra = sorted[i - 1];
+      const til = sorted[i];
+      if (
+        fra.map_x_percent == null ||
+        fra.map_y_percent == null ||
+        til.map_x_percent == null ||
+        til.map_y_percent == null
+      ) {
+        continue;
+      }
+
+      const dx = ((til.map_x_percent - fra.map_x_percent) / 100) * img.naturalWidth;
+      // Billedets y-akse vokser nedad, mens nord er opad — derfor det
+      // omvendte fortegn.
+      const dy = ((til.map_y_percent - fra.map_y_percent) / 100) * img.naturalHeight;
+      const nord = -dy;
+
+      if (Math.abs(dx) < 1e-6 && Math.abs(nord) < 1e-6) continue;
+
+      const grader = (((Math.atan2(dx, nord) * 180) / Math.PI) % 360 + 360) % 360;
+      opdateringer.push({ id: til.id, bearing: Math.round(grader) });
+    }
+
+    if (opdateringer.length === 0) {
+      showToast(
+        'Ingen retninger kunne beregnes. Placér mindst to på-hinanden-følgende stop på kortet først.',
+        'error'
+      );
+      return;
+    }
+
+    setComputingBearings(true);
+    for (const u of opdateringer) {
+      const { ok } = await mutate(
+        supabase.from('gudenaa_stops').update({ bearing_degrees: u.bearing }).eq('id', u.id),
+        { toastOnError: false }
+      );
+      if (!ok) {
+        setComputingBearings(false);
+        showToast('Noget gik galt undervejs — ikke alle retninger blev opdateret.', 'error');
+        reloadStops();
+        return;
+      }
+    }
+    setComputingBearings(false);
+    showToast(
+      `${opdateringer.length} retning${opdateringer.length === 1 ? '' : 'er'} beregnet ud fra kortet.`,
+      'success'
+    );
+    reloadStops();
+  }
+
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
-    if (!drawing) return;
     const p = percentFromEvent(e);
     if (!p) return;
+
+    if (placingStopId) {
+      placeStop(placingStopId, p);
+      return;
+    }
+
+    if (!drawing) return;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     setStart(p);
     setCurrent(p);
@@ -522,7 +623,19 @@ function MapEditor() {
       {overviewUrl && (
         <>
           <div>
-            {!drawing ? (
+            {placingStopId ? (
+              <p className="text-sm text-river-600">
+                Tryk på kortet der, hvor{' '}
+                <strong>{stops.find((s) => s.id === placingStopId)?.name ?? 'stoppet'}</strong> ligger.{' '}
+                <button
+                  type="button"
+                  className="text-river-500 underline"
+                  onClick={() => setPlacingStopId(null)}
+                >
+                  Annuller
+                </button>
+              </p>
+            ) : !drawing ? (
               <button type="button" className="btn-secondary" onClick={() => setDrawing(true)}>
                 + Tilføj kortudsnit
               </button>
@@ -575,6 +688,23 @@ function MapEditor() {
                 </span>
               </div>
             ))}
+
+            {/* Placerede stop, som prikker med nummer. Nummeret er stoppets
+                plads i sejlretningen, så man kan se om kæden følger åen. */}
+            {[...stops]
+              .sort((a, b) => a.sort_order - b.sort_order)
+              .map((s, index) =>
+                s.map_x_percent != null && s.map_y_percent != null ? (
+                  <span
+                    key={s.id}
+                    title={s.name}
+                    className="pointer-events-none absolute flex h-5 w-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-white bg-sand-600 text-[10px] font-medium text-white shadow"
+                    style={{ left: `${s.map_x_percent}%`, top: `${s.map_y_percent}%` }}
+                  >
+                    {index + 1}
+                  </span>
+                ) : null
+              )}
 
             {previewRect && (
               <div
@@ -634,6 +764,64 @@ function MapEditor() {
             </button>
           </div>
         </form>
+      )}
+
+      {overviewUrl && stops.length > 0 && (
+        <div className="border-t border-river-100 pt-4">
+          <h3 className="font-medium text-river-800">Stop på kortet</h3>
+          <p className="mt-1 text-sm text-river-500">
+            Placér hvert stop på kortet, så kan retningen mellem dem beregnes præcist i stedet for at
+            skulle vælges blandt otte kompasretninger. Kortet er nord-op, så beregningen bliver lige så
+            nøjagtig, som prikkerne er sat.
+          </p>
+
+          <ul className="mt-3 divide-y divide-river-100 text-sm">
+            {[...stops]
+              .sort((a, b) => a.sort_order - b.sort_order)
+              .map((s, index) => {
+                const placeret = s.map_x_percent != null && s.map_y_percent != null;
+                return (
+                  <li key={s.id} className="flex items-center justify-between gap-3 py-2">
+                    <span className={placeret ? 'text-river-700' : 'text-river-400'}>
+                      {index + 1}. {s.name}
+                      {!placeret && <span className="ml-2 text-xs">ikke placeret</span>}
+                      {placeret && s.bearing_degrees != null && (
+                        <span className="ml-2 text-xs text-river-400">
+                          {s.bearing_degrees}° ({compassFromDegrees(s.bearing_degrees)})
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 text-xs text-river-600 hover:underline"
+                      onClick={() => {
+                        setPlacingStopId(s.id);
+                        setDrawing(false);
+                        setPendingRect(null);
+                      }}
+                    >
+                      {placeret ? 'Flyt' : 'Placér'}
+                    </button>
+                  </li>
+                );
+              })}
+          </ul>
+
+          <div className="mt-3">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={computeBearingsFromMap}
+              disabled={computingBearings}
+            >
+              {computingBearings ? 'Beregner…' : 'Beregn retninger ud fra kortet'}
+            </button>
+            <p className="mt-2 text-xs text-river-400">
+              Overskriver de retninger, der er valgt i hånden under "Gudenå-stop" ovenfor. Stop uden en
+              prik på kortet springes over og beholder deres nuværende retning.
+            </p>
+          </div>
+        </div>
       )}
 
       {sections.length > 0 && (
