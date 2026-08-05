@@ -2,16 +2,23 @@ import { FormEvent, useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useTrip } from '../../context/TripContext';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../components/Toast';
+import { useMutate } from '../../hooks/useMutate';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { sortStops } from '../../lib/gudenaa';
+import { formatHours } from '../../lib/stats';
+import { formatDate } from '../../lib/format';
 import { DatePicker } from '../../components/DatePicker';
 import { DurationHoursMinutesInput } from '../../components/DurationHoursMinutesInput';
 import type { SailingTime } from '../../lib/types';
 
 export default function SailingTimesPage() {
-  const { trip, namesById } = useTrip();
+  const { trip, namesById, isEditable } = useTrip();
   const { profile } = useAuth();
   const { stops } = useGudenaaStops();
+  const { showToast } = useToast();
+  const mutate = useMutate();
+
   const [times, setTimes] = useState<SailingTime[]>([]);
   const [showForm, setShowForm] = useState(false);
 
@@ -25,6 +32,7 @@ export default function SailingTimesPage() {
 
   useEffect(() => {
     if (trip) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip?.id]);
 
   // Standarddato for en ny registrering er rejsens første dag, ikke dags
@@ -46,15 +54,36 @@ export default function SailingTimesPage() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!trip || !profile || !startStopId || !endStopId || !totalTime || !sailingTime) return;
-    await supabase.from('gudenaa_sailing_times').insert({
-      trip_id: trip.id,
-      user_id: profile.id,
-      start_stop_id: startStopId,
-      end_stop_id: endStopId,
-      total_time_hours: Number(totalTime),
-      sailing_time_hours: Number(sailingTime),
-      sail_date: sailDate,
-    });
+
+    // Slutstedet skal ligge nedstrøms for startstedet. Ellers giver
+    // strækningen nul kilometer, og registreringen ville forsvinde ud af
+    // statistikken uden at nogen opdagede det.
+    const startIdx = sorted.findIndex((s) => s.id === startStopId);
+    const endIdx = sorted.findIndex((s) => s.id === endStopId);
+    if (endIdx <= startIdx) {
+      showToast('Slutstedet skal ligge længere nede ad åen end startstedet.', 'error');
+      return;
+    }
+
+    if (Number(sailingTime) > Number(totalTime)) {
+      showToast('Den rene sejltid kan ikke være længere end den samlede tid inkl. pauser.', 'error');
+      return;
+    }
+
+    const { ok } = await mutate(
+      supabase.from('gudenaa_sailing_times').insert({
+        trip_id: trip.id,
+        user_id: profile.id,
+        start_stop_id: startStopId,
+        end_stop_id: endStopId,
+        total_time_hours: Number(totalTime),
+        sailing_time_hours: Number(sailingTime),
+        sail_date: sailDate,
+      }),
+      { success: 'Sejltiden er gemt.' }
+    );
+    if (!ok) return;
+
     setStartStopId('');
     setEndStopId('');
     setTotalTime('');
@@ -65,8 +94,8 @@ export default function SailingTimesPage() {
 
   async function handleDelete(id: string) {
     if (!confirm('Slet denne registrering?')) return;
-    await supabase.from('gudenaa_sailing_times').delete().eq('id', id);
-    load();
+    const { ok } = await mutate(supabase.from('gudenaa_sailing_times').delete().eq('id', id));
+    if (ok) load();
   }
 
   const stopName = (id: string) => stops.find((s) => s.id === id)?.name ?? '?';
@@ -80,36 +109,49 @@ export default function SailingTimesPage() {
 
       <div className="space-y-3">
         {times.map((t) => (
-          <div key={t.id} className="card flex items-start justify-between p-4">
-            <div>
+          <div key={t.id} className="card flex items-start justify-between gap-3 p-4">
+            <div className="min-w-0">
               <p className="font-medium text-river-800">
                 {stopName(t.start_stop_id)} → {stopName(t.end_stop_id)}
               </p>
               <p className="text-sm text-river-500">
-                Total: {t.total_time_hours} t · Sejltid: {t.sailing_time_hours} t
+                Sejltid: {formatHours(t.sailing_time_hours)} · Inkl. pauser:{' '}
+                {formatHours(t.total_time_hours)}
               </p>
               <p className="text-xs text-river-400">
-                {namesById[t.user_id] ?? t.profile?.name ?? '?'} · {t.sail_date}
+                {namesById[t.user_id] ?? t.profile?.name ?? '?'} · {formatDate(t.sail_date)}
               </p>
             </div>
-            <button className="text-xs text-red-500 hover:underline" onClick={() => handleDelete(t.id)}>
-              Slet
-            </button>
+            {(t.user_id === profile?.id || isEditable) && (
+              <button
+                className="shrink-0 text-xs text-red-500 hover:underline"
+                onClick={() => handleDelete(t.id)}
+              >
+                Slet
+              </button>
+            )}
           </div>
         ))}
-        {times.length === 0 && <div className="card p-8 text-center text-river-400">Ingen sejltider endnu.</div>}
+        {times.length === 0 && (
+          <div className="card p-8 text-center text-river-400">Ingen sejltider endnu.</div>
+        )}
       </div>
 
-      {!showForm && (
+      {isEditable && !showForm && (
         <button className="btn-primary" onClick={() => setShowForm(true)}>
           + Log sejltid
         </button>
       )}
 
-      {showForm && (
+      {isEditable && showForm && (
         <form onSubmit={handleSubmit} className="card space-y-3 p-5">
           <div className="grid grid-cols-2 gap-3">
-            <select className="input" value={startStopId} onChange={(e) => setStartStopId(e.target.value)} required>
+            <select
+              className="input"
+              value={startStopId}
+              onChange={(e) => setStartStopId(e.target.value)}
+              required
+            >
               <option value="">Startsted</option>
               {sorted.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -117,7 +159,12 @@ export default function SailingTimesPage() {
                 </option>
               ))}
             </select>
-            <select className="input" value={endStopId} onChange={(e) => setEndStopId(e.target.value)} required>
+            <select
+              className="input"
+              value={endStopId}
+              onChange={(e) => setEndStopId(e.target.value)}
+              required
+            >
               <option value="">Slutsted</option>
               {sorted.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -126,16 +173,18 @@ export default function SailingTimesPage() {
               ))}
             </select>
           </div>
+
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Total tid, inkl. pauser</label>
-              <DurationHoursMinutesInput value={totalTime} onChange={setTotalTime} />
-            </div>
             <div>
               <label className="label">Ren sejltid</label>
               <DurationHoursMinutesInput value={sailingTime} onChange={setSailingTime} />
             </div>
+            <div>
+              <label className="label">Total tid, inkl. pauser</label>
+              <DurationHoursMinutesInput value={totalTime} onChange={setTotalTime} />
+            </div>
           </div>
+
           <DatePicker value={sailDate} onChange={setSailDate} />
           <div className="flex gap-2">
             <button className="btn-primary">Gem</button>
