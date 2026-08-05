@@ -1,15 +1,21 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { ZoomableImage } from '../../components/ZoomableImage';
+import { useStorageImageUrl } from '../../hooks/useStorageImageUrl';
 import type { GudenaaMapSection } from '../../lib/types';
 
 const BUCKET = 'gudenaa-maps';
 
 export default function MapPage() {
-  const [overviewUrl, setOverviewUrl] = useState<string | null>(null);
+  const [overviewPath, setOverviewPath] = useState<string | null>(null);
   const [sections, setSections] = useState<GudenaaMapSection[]>([]);
   const [loading, setLoading] = useState(true);
   const [openSection, setOpenSection] = useState<GudenaaMapSection | null>(null);
+
+  // Bucketten er privat, så billedet skal hentes via download() (som
+  // respekterer login og adgangsregler) i stedet for getPublicUrl() (som
+  // kun virker på offentlige buckets) — se hooket for forklaringen.
+  const overviewUrl = useStorageImageUrl(BUCKET, overviewPath);
 
   useEffect(() => {
     load();
@@ -17,30 +23,23 @@ export default function MapPage() {
 
   async function load() {
     setLoading(true);
-
     const [{ data: setting }, { data: sectionData }] = await Promise.all([
-      supabase.from('admin_settings').select('value').eq('key', 'gudenaa_map_overview_path').maybeSingle(),
+      supabase
+        .from('admin_settings')
+        .select('value')
+        .eq('key', 'gudenaa_map_overview_path')
+        .maybeSingle(),
       supabase.from('gudenaa_map_sections').select('*').order('sort_order'),
     ]);
 
-    const overviewPath = setting?.value as string | undefined;
-    setOverviewUrl(overviewPath ? publicUrlFor(overviewPath) : null);
+    setOverviewPath((setting?.value as string | undefined) ?? null);
     setSections((sectionData as GudenaaMapSection[]) ?? []);
     setLoading(false);
   }
 
-  function publicUrlFor(path: string): string {
-    // Bucketten er privat (kræver login for at læse), men signerede URL'er er
-    // ikke nødvendige her — supabase-js sender automatisk brugerens session
-    // med i getPublicUrl-baserede opslag, når RLS-policyen tillader det for
-    // "authenticated". Er bucketten senere slået om til reelt offentlig,
-    // virker denne uændret.
-    return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
-  }
-
   if (loading) return <p className="text-river-500">Indlæser…</p>;
 
-  if (!overviewUrl) {
+  if (!overviewPath) {
     return (
       <div className="card p-8 text-center text-river-400">
         Der er endnu ikke uploadet et kort. Det gøres under Admin → Gudenåen.
@@ -59,25 +58,29 @@ export default function MapPage() {
       </div>
 
       <div className="card overflow-hidden p-0">
-        <ZoomableImage src={overviewUrl} alt="Oversigtskort over Gudenåen" className="w-full">
-          {sections.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => setOpenSection(s)}
-              title={s.label}
-              className="absolute rounded-md border-2 border-sand-400/0 bg-sand-300/0 transition-colors hover:border-sand-500 hover:bg-sand-300/25 focus:border-sand-500 focus:bg-sand-300/25 focus:outline-none"
-              style={{
-                left: `${s.x_percent}%`,
-                top: `${s.y_percent}%`,
-                width: `${s.width_percent}%`,
-                height: `${s.height_percent}%`,
-              }}
-            >
-              <span className="sr-only">{s.label}</span>
-            </button>
-          ))}
-        </ZoomableImage>
+        {overviewUrl ? (
+          <ZoomableImage src={overviewUrl} alt="Oversigtskort over Gudenåen" className="w-full">
+            {sections.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => setOpenSection(s)}
+                title={s.label}
+                className="absolute rounded-md border-2 border-sand-400/0 bg-sand-300/0 transition-colors hover:border-sand-500 hover:bg-sand-300/25 focus:border-sand-500 focus:bg-sand-300/25 focus:outline-none"
+                style={{
+                  left: `${s.x_percent}%`,
+                  top: `${s.y_percent}%`,
+                  width: `${s.width_percent}%`,
+                  height: `${s.height_percent}%`,
+                }}
+              >
+                <span className="sr-only">{s.label}</span>
+              </button>
+            ))}
+          </ZoomableImage>
+        ) : (
+          <p className="p-8 text-center text-river-400">Henter kort…</p>
+        )}
       </div>
 
       {sections.length === 0 && (
@@ -86,26 +89,14 @@ export default function MapPage() {
         </p>
       )}
 
-      {openSection && (
-        <SectionViewer
-          section={openSection}
-          onClose={() => setOpenSection(null)}
-          publicUrlFor={publicUrlFor}
-        />
-      )}
+      {openSection && <SectionViewer section={openSection} onClose={() => setOpenSection(null)} />}
     </div>
   );
 }
 
-function SectionViewer({
-  section,
-  onClose,
-  publicUrlFor,
-}: {
-  section: GudenaaMapSection;
-  onClose: () => void;
-  publicUrlFor: (path: string) => string;
-}) {
+function SectionViewer({ section, onClose }: { section: GudenaaMapSection; onClose: () => void }) {
+  const url = useStorageImageUrl(BUCKET, section.storage_path);
+
   // Luk med Escape, som man forventer af en fuldskærmsvisning.
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
@@ -128,12 +119,11 @@ function SectionViewer({
         </button>
       </div>
       <div className="flex-1 overflow-hidden">
-        <ZoomableImage
-          src={publicUrlFor(section.storage_path)}
-          alt={section.label}
-          className="h-full w-full"
-          maxScale={6}
-        />
+        {url ? (
+          <ZoomableImage src={url} alt={section.label} className="h-full w-full" maxScale={6} />
+        ) : (
+          <p className="p-8 text-center text-river-300">Henter billede…</p>
+        )}
       </div>
     </div>
   );
