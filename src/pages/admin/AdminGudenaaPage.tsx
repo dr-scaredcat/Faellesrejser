@@ -3,6 +3,7 @@ import { supabase } from '../../lib/supabase';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { useMutate } from '../../hooks/useMutate';
 import { useToast } from '../../components/Toast';
+import { useStorageImageUrl } from '../../hooks/useStorageImageUrl';
 import { COMPASS_DEGREES, COMPASS_POINTS, compassFromDegrees } from '../../lib/windEffect';
 import type { GudenaaMapSection } from '../../lib/types';
 
@@ -354,9 +355,10 @@ function MapEditor() {
     setLoading(false);
   }
 
-  function urlFor(path: string): string {
-    return supabase.storage.from(MAP_BUCKET).getPublicUrl(path).data.publicUrl;
-  }
+  // Bucketten er privat, så billedet skal hentes via download() (respekterer
+  // login og adgangsregler) i stedet for getPublicUrl(), som kun virker på
+  // offentlige buckets og ellers giver et knækket billede.
+  const overviewUrl = useStorageImageUrl(MAP_BUCKET, overviewPath);
 
   async function handleOverviewUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -481,7 +483,6 @@ function MapEditor() {
 
   if (loading) return null;
 
-  const overviewUrl = overviewPath ? urlFor(overviewPath) : null;
   const previewRect =
     drawing && start && current
       ? {
@@ -513,6 +514,10 @@ function MapEditor() {
         />
         {uploadingOverview && <p className="mt-1 text-xs text-river-400">Uploader…</p>}
       </div>
+
+      {overviewPath && !overviewUrl && (
+        <p className="text-sm text-river-400">Henter forhåndsvisning…</p>
+      )}
 
       {overviewUrl && (
         <>
