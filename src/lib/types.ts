@@ -180,6 +180,22 @@ export interface DrivingLog {
   vehicle?: Vehicle;
 }
 
+/**
+ * Et klikbart udsnit på Gudenå-oversigtskortet, der åbner et mere detaljeret
+ * kort. Positionen er gemt som procent af oversigtskortets bredde/højde
+ * (0-100), ikke pixels, så den rammer rigtigt uanset skærmstørrelse.
+ */
+export interface GudenaaMapSection {
+  id: string;
+  label: string;
+  storage_path: string;
+  x_percent: number;
+  y_percent: number;
+  width_percent: number;
+  height_percent: number;
+  sort_order: number;
+}
+
 export interface GudenaaStop {
   id: string;
   name: string;
