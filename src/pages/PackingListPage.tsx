@@ -2,19 +2,69 @@ import { FormEvent, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useTrip } from '../context/TripContext';
 import { useAuth } from '../context/AuthContext';
-import type { PackingCategory, PackingItem, PackingItemStatus } from '../lib/types';
+import { useMutate } from '../hooks/useMutate';
+import { useToast } from '../components/Toast';
+import { formatDate } from '../lib/format';
+import type { PackingCategory, PackingItem, PackingItemAssignee, PackingItemStatus, Trip } from '../lib/types';
 
 export default function PackingListPage() {
   const { trip, namesById, isEditable } = useTrip();
   const { profile } = useAuth();
+  const mutate = useMutate();
+  const { showToast } = useToast();
+
   const [categories, setCategories] = useState<PackingCategory[]>([]);
   const [items, setItems] = useState<Record<string, PackingItem[]>>({});
   const [statuses, setStatuses] = useState<Record<string, PackingItemStatus[]>>({});
+  const [assignees, setAssignees] = useState<Record<string, PackingItemAssignee[]>>({});
   const [newCategory, setNewCategory] = useState('');
   const [newItemName, setNewItemName] = useState<Record<string, string>>({});
 
+  const [showCopyForm, setShowCopyForm] = useState(false);
+  const [copyableTrips, setCopyableTrips] = useState<Trip[]>([]);
+  const [sourceTripId, setSourceTripId] = useState('');
+  const [copying, setCopying] = useState(false);
+
   useEffect(() => {
     if (trip) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trip?.id]);
+
+  // Realtime: to der pakker samtidig skal se hinandens ændringer med det
+  // samme, i stedet for at den ene overskriver den anden ved næste gem. Vi
+  // genindlæser hele listen ved enhver ændring frem for at forsøge at flette
+  // client-side — det er enklere og kan ikke komme i utakt med databasen.
+  useEffect(() => {
+    if (!trip) return;
+
+    const channel = supabase
+      .channel(`pakkeliste-${trip.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'faellesrejser', table: 'packing_categories' },
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'faellesrejser', table: 'packing_items' },
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'faellesrejser', table: 'packing_item_status' },
+        () => load()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'faellesrejser', table: 'packing_item_assignees' },
+        () => load()
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip?.id]);
 
   async function load() {
@@ -53,14 +103,18 @@ export default function PackingListPage() {
     const itemIds = (allItems ?? []).map((i) => i.id);
     if (itemIds.length === 0) {
       setStatuses({});
+      setAssignees({});
       return;
     }
 
-    const { data: statusData } = await supabase
-      .from('packing_item_status')
-      .select('*, profile:profiles(*)')
-      .in('item_id', itemIds)
-      .eq('packed', true);
+    const [{ data: statusData }, { data: assigneeData }] = await Promise.all([
+      supabase
+        .from('packing_item_status')
+        .select('*, profile:profiles(*)')
+        .in('item_id', itemIds)
+        .eq('packed', true),
+      supabase.from('packing_item_assignees').select('*').in('item_id', itemIds),
+    ]);
 
     const statusByItem: Record<string, PackingItemStatus[]> = {};
     for (const s of (statusData as unknown as PackingItemStatus[]) ?? []) {
@@ -68,16 +122,72 @@ export default function PackingListPage() {
       statusByItem[s.item_id].push(s);
     }
     setStatuses(statusByItem);
+
+    const assigneesByItem: Record<string, PackingItemAssignee[]> = {};
+    for (const a of (assigneeData as PackingItemAssignee[]) ?? []) {
+      assigneesByItem[a.item_id] = assigneesByItem[a.item_id] ?? [];
+      assigneesByItem[a.item_id].push(a);
+    }
+    setAssignees(assigneesByItem);
+  }
+
+  async function loadCopyableTrips() {
+    if (!trip) return;
+    // RLS begrænser i forvejen til rejser man selv er medlem af. Arkiverede
+    // rejser er bevidst med — sidste års kanotur ER netop skabelonen.
+    const { data } = await supabase
+      .from('trips')
+      .select('*')
+      .neq('id', trip.id)
+      .order('start_date', { ascending: false });
+    setCopyableTrips((data as Trip[]) ?? []);
+  }
+
+  async function handleCopy(e: FormEvent) {
+    e.preventDefault();
+    if (!trip || !sourceTripId) return;
+
+    setCopying(true);
+    const { data, ok } = await mutate(
+      supabase.rpc('copy_packing_list', {
+        _source_trip_id: sourceTripId,
+        _target_trip_id: trip.id,
+      })
+    );
+    setCopying(false);
+    if (!ok) return;
+
+    const result = (data as { categories_added: number; items_added: number }[])?.[0];
+    const kategorier = result?.categories_added ?? 0;
+    const emner = result?.items_added ?? 0;
+
+    if (emner === 0 && kategorier === 0) {
+      showToast('Alt fra den rejse findes allerede på listen — der var intet nyt at kopiere.', 'info');
+    } else {
+      showToast(
+        `Kopieret: ${kategorier} ny${kategorier === 1 ? '' : 'e'} kategori${
+          kategorier === 1 ? '' : 'er'
+        }, ${emner} ny${emner === 1 ? 't' : 'e'} genstand${emner === 1 ? '' : 'e'}.`,
+        'success'
+      );
+    }
+
+    setShowCopyForm(false);
+    setSourceTripId('');
+    load();
   }
 
   async function addCategory(e: FormEvent) {
     e.preventDefault();
     if (!trip || !newCategory.trim()) return;
-    await supabase.from('packing_categories').insert({
-      trip_id: trip.id,
-      name: newCategory.trim(),
-      sort_order: categories.length,
-    });
+    const { ok } = await mutate(
+      supabase.from('packing_categories').insert({
+        trip_id: trip.id,
+        name: newCategory.trim(),
+        sort_order: categories.length,
+      })
+    );
+    if (!ok) return;
     setNewCategory('');
     load();
   }
@@ -86,42 +196,128 @@ export default function PackingListPage() {
     e.preventDefault();
     const name = newItemName[categoryId]?.trim();
     if (!name || !profile) return;
-    await supabase.from('packing_items').insert({
-      category_id: categoryId,
-      name,
-      created_by: profile.id,
-    });
+    const { ok } = await mutate(
+      supabase.from('packing_items').insert({
+        category_id: categoryId,
+        name,
+        created_by: profile.id,
+      })
+    );
+    if (!ok) return;
     setNewItemName((prev) => ({ ...prev, [categoryId]: '' }));
     load();
   }
 
   async function togglePacked(itemId: string, currentlyPacked: boolean) {
     if (!profile) return;
-    if (currentlyPacked) {
-      await supabase
-        .from('packing_item_status')
-        .delete()
-        .eq('item_id', itemId)
-        .eq('user_id', profile.id);
-    } else {
-      await supabase.from('packing_item_status').upsert({
-        item_id: itemId,
-        user_id: profile.id,
-        packed: true,
-        packed_at: new Date().toISOString(),
-      });
-    }
-    load();
+    const { ok } = currentlyPacked
+      ? await mutate(
+          supabase.from('packing_item_status').delete().eq('item_id', itemId).eq('user_id', profile.id)
+        )
+      : await mutate(
+          supabase.from('packing_item_status').upsert({
+            item_id: itemId,
+            user_id: profile.id,
+            packed: true,
+            packed_at: new Date().toISOString(),
+          })
+        );
+    if (ok) load();
+  }
+
+  /**
+   * "Jeg tager den også" / "Giv slip". Selvbetjent i begge ender — man melder
+   * kun sig selv til eller fra, aldrig andre. Flere kan være tilmeldt samme
+   * emne på én gang (fx soveposer, hvor hvert par tager deres egen).
+   */
+  async function toggleAssignment(itemId: string) {
+    if (!profile) return;
+    const erMed = (assignees[itemId] ?? []).some((a) => a.user_id === profile.id);
+
+    const { ok } = erMed
+      ? await mutate(
+          supabase
+            .from('packing_item_assignees')
+            .delete()
+            .eq('item_id', itemId)
+            .eq('user_id', profile.id)
+        )
+      : await mutate(
+          supabase
+            .from('packing_item_assignees')
+            .upsert({ item_id: itemId, user_id: profile.id }, { onConflict: 'item_id,user_id' })
+        );
+    if (ok) load();
   }
 
   async function deleteItem(itemId: string) {
     if (!confirm('Slet denne genstand fra pakkelisten?')) return;
-    await supabase.from('packing_items').delete().eq('id', itemId);
-    load();
+    const { ok } = await mutate(supabase.from('packing_items').delete().eq('id', itemId));
+    if (ok) load();
   }
+
+  const hasAnyItems = Object.values(items).some((list) => list.length > 0);
 
   return (
     <div className="space-y-5">
+      {isEditable && (
+        <div className="card p-5">
+          {!showCopyForm ? (
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setShowCopyForm(true);
+                loadCopyableTrips();
+              }}
+            >
+              Kopiér fra tidligere rejse
+            </button>
+          ) : (
+            <form onSubmit={handleCopy} className="space-y-3">
+              <div>
+                <label className="label">Kopiér pakkeliste fra</label>
+                <select
+                  className="input"
+                  value={sourceTripId}
+                  onChange={(e) => setSourceTripId(e.target.value)}
+                  required
+                >
+                  <option value="">Vælg rejse</option>
+                  {copyableTrips.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                      {t.start_date ? ` (${formatDate(t.start_date)})` : ''}
+                      {t.is_archived ? ' — arkiveret' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-river-400">
+                  {hasAnyItems
+                    ? 'Kategorier med samme navn genbruges, og genstande der allerede findes springes over — I mister ikke noget, I allerede har tilføjet.'
+                    : 'Alt fra den valgte rejse lægges ind som udgangspunkt.'}
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button className="btn-primary" disabled={!sourceTripId || copying}>
+                  {copying ? 'Kopierer…' : 'Kopiér'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setShowCopyForm(false);
+                    setSourceTripId('');
+                  }}
+                  disabled={copying}
+                >
+                  Annuller
+                </button>
+              </div>
+            </form>
+          )}
+        </div>
+      )}
+
       {categories.map((cat) => (
         <div key={cat.id} className="card p-5">
           <h2 className="mb-3 font-semibold text-river-800">{cat.name}</h2>
@@ -129,39 +325,58 @@ export default function PackingListPage() {
             {(items[cat.id] ?? []).map((item, index) => {
               const packedBy = statuses[item.id] ?? [];
               const iPacked = packedBy.some((s) => s.user_id === profile?.id);
+              const taget = assignees[item.id] ?? [];
+              const erMedSelv = taget.some((a) => a.user_id === profile?.id);
+
               return (
                 <li
                   key={item.id}
-                  className={`flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm ${
-                    index % 2 === 1 ? 'bg-river-50' : ''
-                  }`}
+                  className={`rounded-md px-2 py-1.5 text-sm ${index % 2 === 1 ? 'bg-river-50' : ''}`}
                 >
-                  <label className="flex flex-1 items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={iPacked}
-                      onChange={() => togglePacked(item.id, iPacked)}
-                    />
-                    <span
-                      className="cursor-pointer select-none"
-                      onClick={() => togglePacked(item.id, iPacked)}
-                    >
-                      {item.name}
-                    </span>
-                  </label>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {packedBy.length > 0 && (
-                      <span className="text-xs text-river-400">
-                        Pakket af {packedBy.map((s) => namesById[s.user_id] ?? '?').join(', ')}
+                  <div className="flex items-center justify-between gap-3">
+                    <label className="flex flex-1 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={iPacked}
+                        onChange={() => togglePacked(item.id, iPacked)}
+                      />
+                      <span
+                        className="cursor-pointer select-none"
+                        onClick={() => togglePacked(item.id, iPacked)}
+                      >
+                        {item.name}
                       </span>
-                    )}
+                    </label>
                     {isEditable && (
                       <button
-                        className="text-xs text-red-500 hover:underline"
+                        className="shrink-0 text-xs text-red-500 hover:underline"
                         onClick={() => deleteItem(item.id)}
                       >
                         Slet
                       </button>
+                    )}
+                  </div>
+
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-6 text-xs text-river-400">
+                    {taget.length > 0 && (
+                      <span>
+                        <span className="font-medium text-river-600">
+                          {taget.map((a) => namesById[a.user_id] ?? '?').join(', ')}
+                        </span>{' '}
+                        tager den
+                      </span>
+                    )}
+                    <button
+                      className="text-river-500 hover:underline"
+                      onClick={() => toggleAssignment(item.id)}
+                    >
+                      {erMedSelv ? 'Giv slip' : taget.length > 0 ? 'Jeg tager den også' : 'Jeg tager den'}
+                    </button>
+
+                    {packedBy.length > 0 && (
+                      <span>
+                        Pakket af {packedBy.map((s) => namesById[s.user_id] ?? '?').join(', ')}
+                      </span>
                     )}
                   </div>
                 </li>
