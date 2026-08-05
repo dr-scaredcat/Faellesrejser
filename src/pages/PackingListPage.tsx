@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useMutate } from '../hooks/useMutate';
 import { useToast } from '../components/Toast';
 import { formatDate } from '../lib/format';
-import type { PackingCategory, PackingItem, PackingItemAssignee, PackingItemStatus, Trip } from '../lib/types';
+import type { PackingCategory, PackingItem, PackingItemStatus, Trip } from '../lib/types';
 
 export default function PackingListPage() {
   const { trip, namesById, isEditable } = useTrip();
@@ -16,7 +16,6 @@ export default function PackingListPage() {
   const [categories, setCategories] = useState<PackingCategory[]>([]);
   const [items, setItems] = useState<Record<string, PackingItem[]>>({});
   const [statuses, setStatuses] = useState<Record<string, PackingItemStatus[]>>({});
-  const [assignees, setAssignees] = useState<Record<string, PackingItemAssignee[]>>({});
   const [newCategory, setNewCategory] = useState('');
   const [newItemName, setNewItemName] = useState<Record<string, string>>({});
 
@@ -52,11 +51,6 @@ export default function PackingListPage() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'faellesrejser', table: 'packing_item_status' },
-        () => load()
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'faellesrejser', table: 'packing_item_assignees' },
         () => load()
       )
       .subscribe();
@@ -103,18 +97,14 @@ export default function PackingListPage() {
     const itemIds = (allItems ?? []).map((i) => i.id);
     if (itemIds.length === 0) {
       setStatuses({});
-      setAssignees({});
       return;
     }
 
-    const [{ data: statusData }, { data: assigneeData }] = await Promise.all([
-      supabase
-        .from('packing_item_status')
-        .select('*, profile:profiles(*)')
-        .in('item_id', itemIds)
-        .eq('packed', true),
-      supabase.from('packing_item_assignees').select('*').in('item_id', itemIds),
-    ]);
+    const { data: statusData } = await supabase
+      .from('packing_item_status')
+      .select('*, profile:profiles(*)')
+      .in('item_id', itemIds)
+      .eq('packed', true);
 
     const statusByItem: Record<string, PackingItemStatus[]> = {};
     for (const s of (statusData as unknown as PackingItemStatus[]) ?? []) {
@@ -122,13 +112,6 @@ export default function PackingListPage() {
       statusByItem[s.item_id].push(s);
     }
     setStatuses(statusByItem);
-
-    const assigneesByItem: Record<string, PackingItemAssignee[]> = {};
-    for (const a of (assigneeData as PackingItemAssignee[]) ?? []) {
-      assigneesByItem[a.item_id] = assigneesByItem[a.item_id] ?? [];
-      assigneesByItem[a.item_id].push(a);
-    }
-    setAssignees(assigneesByItem);
   }
 
   async function loadCopyableTrips() {
@@ -225,31 +208,6 @@ export default function PackingListPage() {
     if (ok) load();
   }
 
-  /**
-   * "Jeg tager den også" / "Giv slip". Selvbetjent i begge ender — man melder
-   * kun sig selv til eller fra, aldrig andre. Flere kan være tilmeldt samme
-   * emne på én gang (fx soveposer, hvor hvert par tager deres egen).
-   */
-  async function toggleAssignment(itemId: string) {
-    if (!profile) return;
-    const erMed = (assignees[itemId] ?? []).some((a) => a.user_id === profile.id);
-
-    const { ok } = erMed
-      ? await mutate(
-          supabase
-            .from('packing_item_assignees')
-            .delete()
-            .eq('item_id', itemId)
-            .eq('user_id', profile.id)
-        )
-      : await mutate(
-          supabase
-            .from('packing_item_assignees')
-            .upsert({ item_id: itemId, user_id: profile.id }, { onConflict: 'item_id,user_id' })
-        );
-    if (ok) load();
-  }
-
   async function deleteItem(itemId: string) {
     if (!confirm('Slet denne genstand fra pakkelisten?')) return;
     const { ok } = await mutate(supabase.from('packing_items').delete().eq('id', itemId));
@@ -325,58 +283,40 @@ export default function PackingListPage() {
             {(items[cat.id] ?? []).map((item, index) => {
               const packedBy = statuses[item.id] ?? [];
               const iPacked = packedBy.some((s) => s.user_id === profile?.id);
-              const taget = assignees[item.id] ?? [];
-              const erMedSelv = taget.some((a) => a.user_id === profile?.id);
 
               return (
                 <li
                   key={item.id}
-                  className={`rounded-md px-2 py-1.5 text-sm ${index % 2 === 1 ? 'bg-river-50' : ''}`}
+                  className={`flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm ${
+                    index % 2 === 1 ? 'bg-river-50' : ''
+                  }`}
                 >
-                  <div className="flex items-center justify-between gap-3">
-                    <label className="flex flex-1 items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={iPacked}
-                        onChange={() => togglePacked(item.id, iPacked)}
-                      />
-                      <span
-                        className="cursor-pointer select-none"
-                        onClick={() => togglePacked(item.id, iPacked)}
-                      >
-                        {item.name}
+                  <label className="flex flex-1 items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={iPacked}
+                      onChange={() => togglePacked(item.id, iPacked)}
+                    />
+                    <span
+                      className="cursor-pointer select-none"
+                      onClick={() => togglePacked(item.id, iPacked)}
+                    >
+                      {item.name}
+                    </span>
+                  </label>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {packedBy.length > 0 && (
+                      <span className="text-xs text-river-400">
+                        Pakket af {packedBy.map((s) => namesById[s.user_id] ?? '?').join(', ')}
                       </span>
-                    </label>
+                    )}
                     {isEditable && (
                       <button
-                        className="shrink-0 text-xs text-red-500 hover:underline"
+                        className="text-xs text-red-500 hover:underline"
                         onClick={() => deleteItem(item.id)}
                       >
                         Slet
                       </button>
-                    )}
-                  </div>
-
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-6 text-xs text-river-400">
-                    {taget.length > 0 && (
-                      <span>
-                        <span className="font-medium text-river-600">
-                          {taget.map((a) => namesById[a.user_id] ?? '?').join(', ')}
-                        </span>{' '}
-                        tager den
-                      </span>
-                    )}
-                    <button
-                      className="text-river-500 hover:underline"
-                      onClick={() => toggleAssignment(item.id)}
-                    >
-                      {erMedSelv ? 'Giv slip' : taget.length > 0 ? 'Jeg tager den også' : 'Jeg tager den'}
-                    </button>
-
-                    {packedBy.length > 0 && (
-                      <span>
-                        Pakket af {packedBy.map((s) => namesById[s.user_id] ?? '?').join(', ')}
-                      </span>
                     )}
                   </div>
                 </li>
