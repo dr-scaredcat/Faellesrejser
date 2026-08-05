@@ -16,15 +16,13 @@
     <link rel="shortcut icon" href="/favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-    <!-- Gør siden installerbar som app. Manifestet indeholder navn, ikoner,
-         start-URL og visningstilstand; Android/Chrome læser den, når man
-         vælger "Installer app". -->
+    <!-- Gør siden installerbar som app. -->
     <link rel="manifest" href="/site.webmanifest" />
 
-    <!-- Farver browserens adresselinje og statuslinjen i installeret tilstand.
-         Statisk værdi her (river-600); ThemeContext kan overskrive den ved
-         opstart, hvis I skifter tema. -->
-    <meta name="theme-color" content="#22615c" />
+    <!-- Startværdi svarende til river-700 i standardtemaet (NavBar's farve).
+         applyThemeToDocument() i lib/color.ts overskriver den, så snart det
+         aktive tema er hentet fra databasen. -->
+    <meta name="theme-color" content="#1b4c48" />
 
     <!-- iOS/Safari har ikke fuld manifest-understøttelse og skal have
          tilsvarende oplysninger som meta-tags. -->
@@ -32,6 +30,25 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Fællesrejser" />
+
+    <script>
+      // Chrome fyrer 'beforeinstallprompt' meget tidligt — typisk før React
+      // overhovedet er mountet. Fanger vi den ikke her i <head>, er den væk,
+      // og så kan vores egen installationsknap ikke gøre noget.
+      //
+      // preventDefault() skjuler Chromes egen lille installationsbjælke, så vi
+      // selv bestemmer, hvornår og hvordan vi spørger.
+      window.__installPromptEvent = null;
+      window.addEventListener('beforeinstallprompt', function (e) {
+        e.preventDefault();
+        window.__installPromptEvent = e;
+        window.dispatchEvent(new Event('faellesrejser:install-availability'));
+      });
+      window.addEventListener('appinstalled', function () {
+        window.__installPromptEvent = null;
+        window.dispatchEvent(new Event('faellesrejser:install-availability'));
+      });
+    </script>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
