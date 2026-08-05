@@ -458,8 +458,12 @@ function MapEditor() {
 
       if (Math.abs(dx) < 1e-6 && Math.abs(nord) < 1e-6) continue;
 
+      // Modulo EFTER afrundingen. Normaliseringen giver et tal fra og med 0
+      // op til, men ikke med, 360 — men en retning på fx 359,7° ville runde
+      // op til 360, og feltet tillader kun 0-359. Det ramte netop de stræk,
+      // der går mod nord, hvilket er de fleste på Gudenåen.
       const grader = (((Math.atan2(dx, nord) * 180) / Math.PI) % 360 + 360) % 360;
-      opdateringer.push({ id: til.id, bearing: Math.round(grader) });
+      opdateringer.push({ id: til.id, bearing: Math.round(grader) % 360 });
     }
 
     if (opdateringer.length === 0) {
@@ -471,24 +475,35 @@ function MapEditor() {
     }
 
     setComputingBearings(true);
+    let lykkedes = 0;
+    const fejlede: string[] = [];
+
+    // Fortsætter ved fejl i stedet for at stoppe — ellers ville én enkelt
+    // afvist række efterlade resten uopdaterede uden nogen forklaring på
+    // hvilke.
     for (const u of opdateringer) {
       const { ok } = await mutate(
         supabase.from('gudenaa_stops').update({ bearing_degrees: u.bearing }).eq('id', u.id),
         { toastOnError: false }
       );
-      if (!ok) {
-        setComputingBearings(false);
-        showToast('Noget gik galt undervejs — ikke alle retninger blev opdateret.', 'error');
-        reloadStops();
-        return;
-      }
+      if (ok) lykkedes += 1;
+      else fejlede.push(stops.find((s) => s.id === u.id)?.name ?? 'ukendt stop');
     }
+
     setComputingBearings(false);
-    showToast(
-      `${opdateringer.length} retning${opdateringer.length === 1 ? '' : 'er'} beregnet ud fra kortet.`,
-      'success'
-    );
     reloadStops();
+
+    if (fejlede.length === 0) {
+      showToast(
+        `${lykkedes} retning${lykkedes === 1 ? '' : 'er'} beregnet ud fra kortet.`,
+        'success'
+      );
+    } else {
+      showToast(
+        `${lykkedes} opdateret, men ${fejlede.length} fejlede: ${fejlede.join(', ')}.`,
+        'error'
+      );
+    }
   }
 
   function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
