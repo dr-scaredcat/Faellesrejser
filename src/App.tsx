@@ -17,6 +17,7 @@ import AdminLayout from './pages/admin/AdminLayout';
 import AdminGeneralPage from './pages/admin/AdminGeneralPage';
 import AdminDesignPage from './pages/admin/AdminDesignPage';
 import AdminExpenseCategoriesPage from './pages/admin/AdminExpenseCategoriesPage';
+import AdminNavigationPage from './pages/admin/AdminNavigationPage';
 import AdminGudenaaPage from './pages/admin/AdminGudenaaPage';
 import RoutePlannerPage from './pages/gudenaa/RoutePlannerPage';
 import StatisticsPage from './pages/gudenaa/StatisticsPage';
@@ -92,6 +93,7 @@ export default function App() {
         <Route path="generelt" element={<AdminGeneralPage />} />
         <Route path="design" element={<AdminDesignPage />} />
         <Route path="regnskab" element={<AdminExpenseCategoriesPage />} />
+        <Route path="navigation" element={<AdminNavigationPage />} />
         <Route path="gudenaaen" element={<AdminGudenaaPage />} />
       </Route>
 

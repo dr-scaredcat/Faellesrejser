@@ -14,3 +14,23 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+/**
+ * 'beforeinstallprompt' er en Chromium-specifik udvidelse og findes derfor
+ * ikke i TypeScripts standard-DOM-typer. Vi beskriver den selv.
+ */
+interface BeforeInstallPromptEvent extends Event {
+  readonly platforms: string[];
+  readonly userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
+  prompt(): Promise<void>;
+}
+
+interface Window {
+  /** Sat af det lille inline-script i index.html. */
+  __installPromptEvent: BeforeInstallPromptEvent | null;
+}
+
+interface Navigator {
+  /** Kun iOS Safari: true når siden kører fra hjemmeskærmen. */
+  standalone?: boolean;
+}

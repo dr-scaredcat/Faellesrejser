@@ -4,6 +4,7 @@ const SECTIONS = [
   { path: '/admin/generelt', label: 'Generelt' },
   { path: '/admin/design', label: 'Design' },
   { path: '/admin/regnskab', label: 'Regnskab' },
+  { path: '/admin/navigation', label: 'Navigation' },
   { path: '/admin/gudenaaen', label: 'Gudenåen' },
 ];
 
