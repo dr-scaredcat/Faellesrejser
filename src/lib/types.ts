@@ -43,6 +43,8 @@ export interface PackingCategory {
   trip_id: string;
   name: string;
   sort_order: number;
+  /** Kan slås fra pr. rejse uden at blive slettet, fx "Grej" på en tur uden bagage. */
+  is_enabled: boolean;
 }
 
 export interface PackingItem {
