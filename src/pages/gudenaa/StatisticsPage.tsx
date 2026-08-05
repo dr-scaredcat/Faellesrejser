@@ -449,7 +449,7 @@ export default function StatisticsPage() {
             {historicalModel && !historicalModel.usesFlow && (
               <>
                 {' '}
-                Estimaterne ovenfor bruger endnu ikke vandføringen — det kræver mindst 10 sejldage med kendt
+                Estimaterne ovenfor bruger endnu ikke vandføringen — det kræver mindst 8 sejldage med kendt
                 vandføring, og der er kun {historicalModel.n} registreringer med data indtil videre.
               </>
             )}
@@ -457,7 +457,7 @@ export default function StatisticsPage() {
               <>
                 {' '}
                 Estimaterne ovenfor er justeret for vandføring, men endnu ikke for vind — det kræver mindst
-                10 sejldage med både kendt vandføring og en udfyldt retning på hele strækket.
+                8 sejldage med både kendt vandføring og en udfyldt retning på hele strækket.
               </>
             )}
           </p>
