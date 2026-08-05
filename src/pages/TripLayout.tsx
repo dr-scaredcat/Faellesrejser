@@ -1,4 +1,4 @@
-  import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { TripProvider, useTrip } from '../context/TripContext';
@@ -57,14 +57,14 @@ function TripLayoutInner() {
     end: page.end,
   }));
 
-  // Rejsens "rod" (fx /rejser/abc123, uden noget efter) viser normalt
-  // Overblik via index-routen i App.tsx. Er Overblik ikke den fane, der
-  // ligger først i den gemte rækkefølge, sendes man i stedet videre til den
-  // fane, der rent faktisk ligger først — uanset hvilken side det er.
+  // Rejsens "rod" (fx /rejser/abc123, uden noget efter) er ikke længere en
+  // side i sig selv — hver fane, inklusive Overblik, har nu sin egen
+  // adresse. Roden er derfor altid bare et videresendelsespunkt til den
+  // fane, der ligger først i den gemte rækkefølge.
   const tripRootPath = `/rejser/${tripId}`;
   const isAtTripRoot = location.pathname === tripRootPath || location.pathname === `${tripRootPath}/`;
   const firstTab = tabs[0];
-  if (isAtTripRoot && firstTab && firstTab.to !== tripRootPath) {
+  if (isAtTripRoot && firstTab) {
     return <Navigate to={firstTab.to} replace />;
   }
 
