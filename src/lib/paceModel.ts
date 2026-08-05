@@ -89,7 +89,7 @@ export interface FitOptions {
   minWindObservations?: number;
 }
 
-const DEFAULT_MIN_OBSERVATIONS = 10;
+const DEFAULT_MIN_OBSERVATIONS = 8;
 
 export function fitPaceModel(
   observations: PaceObservation[],

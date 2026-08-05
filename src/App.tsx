@@ -20,6 +20,7 @@ import AdminExpenseCategoriesPage from './pages/admin/AdminExpenseCategoriesPage
 import AdminNavigationPage from './pages/admin/AdminNavigationPage';
 import AdminGudenaaPage from './pages/admin/AdminGudenaaPage';
 import RoutePlannerPage from './pages/gudenaa/RoutePlannerPage';
+import PositionPage from './pages/gudenaa/PositionPage';
 import StatisticsPage from './pages/gudenaa/StatisticsPage';
 import SailingTimesPage from './pages/gudenaa/SailingTimesPage';
 
@@ -107,12 +108,13 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<TripOverviewPage />} />
+        <Route path="overblik" element={<TripOverviewPage />} />
         <Route path="pakkeliste" element={<PackingListPage />} />
         <Route path="rejseplan" element={<ItineraryPage />} />
         <Route path="regnskab" element={<ExpensesPage />} />
         <Route path="koersel" element={<DrivingPage />} />
         <Route path="ruteplanlaegger" element={<RoutePlannerPage />} />
+        <Route path="position" element={<PositionPage />} />
         <Route path="statistik" element={<StatisticsPage />} />
         <Route path="sejltider" element={<SailingTimesPage />} />
       </Route>
