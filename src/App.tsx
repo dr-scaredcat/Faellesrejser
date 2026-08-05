@@ -108,7 +108,7 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<TripOverviewPage />} />
+        <Route path="overblik" element={<TripOverviewPage />} />
         <Route path="pakkeliste" element={<PackingListPage />} />
         <Route path="rejseplan" element={<ItineraryPage />} />
         <Route path="regnskab" element={<ExpensesPage />} />
