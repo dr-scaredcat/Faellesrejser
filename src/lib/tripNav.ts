@@ -16,7 +16,7 @@ export interface TripNavPageDef {
 }
 
 export const TRIP_NAV_PAGES: TripNavPageDef[] = [
-  { key: 'overblik', label: 'Overblik', segment: '', end: true },
+  { key: 'overblik', label: 'Overblik', segment: 'overblik', end: true },
   { key: 'pakkeliste', label: 'Pakkeliste', segment: 'pakkeliste' },
   { key: 'rejseplan', label: 'Rejseplan', segment: 'rejseplan' },
   { key: 'regnskab', label: 'Regnskab', segment: 'regnskab' },
