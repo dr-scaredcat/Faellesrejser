@@ -58,10 +58,45 @@ export function themeToCssVars(colors: ThemeColors): Record<string, string> {
   return vars;
 }
 
+/**
+ * Farven på browserens adresselinje og — når appen er installeret — Androids
+ * statuslinje.
+ *
+ * Vi bruger river-700, fordi det er præcis den farve NavBar har. Så flyder
+ * systemets bjælke sammen med appens egen topbar i stedet for at danne en
+ * synlig kant i en anden nuance.
+ */
+export function themeMetaColor(colors: ThemeColors): string {
+  return colors.river?.['700'] ?? DEFAULT_THEME_COLORS.river['700'];
+}
+
+/**
+ * Opdaterer <meta name="theme-color">.
+ *
+ * Bemærk forskellen på denne og "theme_color" i site.webmanifest: manifestets
+ * værdi bliver låst fast, da appen blev installeret, og ændrer sig ikke, før
+ * brugeren afinstallerer og installerer igen. Meta-tagget her slår derimod
+ * igennem med det samme — også inde i en allerede installeret app. Derfor er
+ * det denne, der skal følge temaet.
+ */
+export function applyThemeColorMeta(colors: ThemeColors) {
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+  }
+  meta.content = themeMetaColor(colors);
+}
+
 /** Sætter temafarverne som CSS-variabler direkte på <html>, så hele appen bruger dem. */
 export function applyThemeToDocument(colors: ThemeColors) {
   const vars = themeToCssVars(colors);
   for (const [key, value] of Object.entries(vars)) {
     document.documentElement.style.setProperty(key, value);
   }
+  // Kaldes herfra og ikke fra ThemeContext, så adresselinjen automatisk følger
+  // med alle steder, hvor temaet skiftes — også når en anden admin skifter det
+  // via realtime-kanalen.
+  applyThemeColorMeta(colors);
 }
