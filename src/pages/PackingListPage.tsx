@@ -63,10 +63,13 @@ export default function PackingListPage() {
 
   async function load() {
     if (!trip) return;
+    // Kun aktiverede kategorier vises her. Slukkede kategorier redigeres på
+    // Overblik-siden i stedet — se PackingCategoriesEditor.
     const { data: cats } = await supabase
       .from('packing_categories')
       .select('*')
       .eq('trip_id', trip.id)
+      .eq('is_enabled', true)
       .order('sort_order');
     setCategories((cats as PackingCategory[]) ?? []);
 

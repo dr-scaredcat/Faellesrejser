@@ -64,3 +64,62 @@ export function orderedTripPages(order: string[], isGudenaa: boolean): TripNavPa
 export function tripPageHref(tripId: string, page: TripNavPageDef): string {
   return page.segment ? `/rejser/${tripId}/${page.segment}` : `/rejser/${tripId}`;
 }
+
+// ---------------------------------------------------------------------------
+// Rejsespecifik overstyring af rækkefølge og synlighed
+// ---------------------------------------------------------------------------
+
+export interface TripNavOverride {
+  /** Fuld rækkefølge af ALLE kendte sider, ikke kun de synlige. */
+  order: string[];
+  /** Hvilke af siderne der er slået fra for netop denne rejse. */
+  disabled: string[];
+}
+
+/**
+ * Fortolker rå data fra trip_nav_overrides. Robust på samme måde som
+ * parseTripNavOrder: ukendte nøgler frasorteres, og nye sider, som ingen har
+ * taget stilling til endnu, tilføjes automatisk (og forbliver synlige, da de
+ * ikke er eksplicit slået fra).
+ */
+export function parseTripNavOverride(raw: { nav_order?: unknown; disabled_pages?: unknown } | null | undefined): TripNavOverride | null {
+  if (!raw || !Array.isArray(raw.nav_order)) return null;
+
+  const order = raw.nav_order.filter(
+    (k): k is string => typeof k === 'string' && KNOWN_KEYS.has(k)
+  );
+  const disabled = Array.isArray(raw.disabled_pages)
+    ? raw.disabled_pages.filter((k): k is string => typeof k === 'string' && KNOWN_KEYS.has(k))
+    : [];
+
+  const manglende = DEFAULT_TRIP_NAV_ORDER.filter((k) => !order.includes(k));
+  return { order: [...order, ...manglende], disabled };
+}
+
+/**
+ * De sider der reelt skal vises på en given rejse, i den rigtige rækkefølge.
+ * Er der ingen rejsespecifik overstyring, bruges admin-standarden fuldt ud —
+ * uændret opførsel fra før denne funktion fandtes.
+ *
+ * "Overblik" kan aldrig slås fra, og listen er aldrig tom — begge dele er
+ * en sikkerhedsforanstaltning, så man ikke kan navigere sig selv ud i en
+ * rejse uden nogen sider overhovedet.
+ */
+export function resolveTripPages(
+  adminOrder: string[],
+  override: TripNavOverride | null,
+  isGudenaa: boolean
+): TripNavPageDef[] {
+  const baseOrder = override ? override.order : adminOrder;
+  const disabledSet = new Set(override?.disabled ?? []);
+  disabledSet.delete('overblik');
+
+  const pages = orderedTripPages(baseOrder, isGudenaa).filter((p) => !disabledSet.has(p.key));
+
+  if (pages.length > 0) return pages;
+
+  // Sikkerhedsnet: skulle alt andet være slået fra, vis i det mindste
+  // Overblik, så rejsen ikke ender uden nogen sider overhovedet.
+  const overblik = TRIP_NAV_PAGES.find((p) => p.key === 'overblik');
+  return overblik ? [overblik] : [];
+}
