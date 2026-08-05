@@ -500,7 +500,7 @@ export default function StatisticsPage() {
 
           {slowestDay && (
             <div>
-              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Roligste dag</p>
+              <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Langsomste dag</p>
               <p className="text-sm text-river-600">
                 {stopName(slowestDay.startStopId)} → {stopName(slowestDay.endStopId)} (
                 {formatKmT(slowestDay.km / slowestDay.sailingHours)}, {slowestDay.sailDate})
