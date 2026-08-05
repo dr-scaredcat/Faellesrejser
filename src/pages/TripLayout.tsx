@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
-import { NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
+  import { useEffect, useRef, useState } from 'react';
+import { Navigate, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { TripProvider, useTrip } from '../context/TripContext';
-import { DEFAULT_TRIP_NAV_ORDER, orderedTripPages, parseTripNavOrder, tripPageHref } from '../lib/tripNav';
+import { orderedTripPages, parseTripNavOrder, tripPageHref } from '../lib/tripNav';
 
 interface Tab {
   to: string;
@@ -20,7 +20,11 @@ function TripLayoutInner() {
   const { tripId } = useParams();
   const { trip, loading, isEditable } = useTrip();
   const location = useLocation();
-  const [navOrder, setNavOrder] = useState<string[]>(DEFAULT_TRIP_NAV_ORDER);
+  // null = endnu ikke hentet. Vi venter bevidst med at vise noget, til
+  // rækkefølgen er kendt — ellers ville siden nå at vise "Overblik" et
+  // øjeblik, før den sprang videre til den rigtige startside, hver gang den
+  // ikke er først i rækkefølgen.
+  const [navOrder, setNavOrder] = useState<string[] | null>(null);
 
   // Rækkefølgen sættes på admin-siden "Navigation" og gælder for alle
   // rejser. Uafhængig af hvilken rejse man kigger på, så den hentes én gang,
@@ -41,7 +45,7 @@ function TripLayoutInner() {
     };
   }, []);
 
-  if (loading) return <div className="p-8 text-river-500">Indlæser rejse…</div>;
+  if (loading || navOrder === null) return <div className="p-8 text-river-500">Indlæser rejse…</div>;
   if (!trip) return <div className="p-8 text-river-500">Rejsen blev ikke fundet.</div>;
 
   // Den globale rækkefølge filtreres til det, der er relevant for netop
@@ -52,6 +56,17 @@ function TripLayoutInner() {
     label: page.label,
     end: page.end,
   }));
+
+  // Rejsens "rod" (fx /rejser/abc123, uden noget efter) viser normalt
+  // Overblik via index-routen i App.tsx. Er Overblik ikke den fane, der
+  // ligger først i den gemte rækkefølge, sendes man i stedet videre til den
+  // fane, der rent faktisk ligger først — uanset hvilken side det er.
+  const tripRootPath = `/rejser/${tripId}`;
+  const isAtTripRoot = location.pathname === tripRootPath || location.pathname === `${tripRootPath}/`;
+  const firstTab = tabs[0];
+  if (isAtTripRoot && firstTab && firstTab.to !== tripRootPath) {
+    return <Navigate to={firstTab.to} replace />;
+  }
 
   function isTabActive(tab: Tab): boolean {
     return tab.end ? location.pathname === tab.to : location.pathname.startsWith(tab.to);
@@ -138,14 +153,16 @@ function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: T
   if (restTabs.length === 0) {
     // Færre end fire faner i alt — ingen grund til en "Mere"-knap.
     return (
-      <div className="flex gap-1 border-b border-river-100 pb-2">
+      <div className="flex gap-0.5 border-b border-river-100 pb-2">
         {tabs.map((tab) => (
           <NavLink
             key={tab.to}
             to={tab.to}
             end={tab.end}
             className={({ isActive }) =>
-              `tab min-w-0 flex-1 truncate text-center ${isActive ? 'tab-active' : 'tab-inactive'}`
+              `tab min-w-0 flex-1 truncate px-2 py-1.5 text-center text-xs ${
+                isActive ? 'tab-active' : 'tab-inactive'
+              }`
             }
           >
             {tab.label}
@@ -157,14 +174,19 @@ function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: T
 
   return (
     <div className="relative border-b border-river-100 pb-2" ref={menuRef}>
-      <div className="flex gap-1">
+      <div className="flex gap-0.5">
         {primaryTabs.map((tab) => (
           <NavLink
             key={tab.to}
             to={tab.to}
             end={tab.end}
+            // flex-[2] mod knappens flex-1: er der ikke plads til alle
+            // labels fuldt ud, er det "Mere"/den aktive skjulte side, der
+            // afkortes først — man kan jo se hele navnet, når menuen åbnes.
             className={({ isActive }) =>
-              `tab min-w-0 flex-1 truncate text-center ${isActive ? 'tab-active' : 'tab-inactive'}`
+              `tab min-w-0 flex-[2] truncate px-2 py-1.5 text-center text-xs ${
+                isActive ? 'tab-active' : 'tab-inactive'
+              }`
             }
           >
             {tab.label}
@@ -176,7 +198,7 @@ function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: T
           onClick={() => setOpen((v) => !v)}
           aria-haspopup="menu"
           aria-expanded={open}
-          className={`tab flex min-w-0 flex-1 items-center justify-center gap-1 text-center ${
+          className={`tab flex min-w-0 flex-1 items-center justify-center gap-1 px-2 py-1.5 text-center text-xs ${
             activeHiddenTab ? 'tab-active' : 'tab-inactive'
           }`}
         >
