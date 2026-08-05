@@ -2,7 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import { Navigate, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { TripProvider, useTrip } from '../context/TripContext';
-import { orderedTripPages, parseTripNavOrder, tripPageHref } from '../lib/tripNav';
+import {
+  parseTripNavOrder,
+  parseTripNavOverride,
+  resolveTripPages,
+  tripPageHref,
+  type TripNavOverride,
+} from '../lib/tripNav';
 
 interface Tab {
   to: string;
@@ -20,15 +26,17 @@ function TripLayoutInner() {
   const { tripId } = useParams();
   const { trip, loading, isEditable } = useTrip();
   const location = useLocation();
-  // null = endnu ikke hentet. Vi venter bevidst med at vise noget, til
-  // rækkefølgen er kendt — ellers ville siden nå at vise "Overblik" et
-  // øjeblik, før den sprang videre til den rigtige startside, hver gang den
-  // ikke er først i rækkefølgen.
-  const [navOrder, setNavOrder] = useState<string[] | null>(null);
 
-  // Rækkefølgen sættes på admin-siden "Navigation" og gælder for alle
-  // rejser. Uafhængig af hvilken rejse man kigger på, så den hentes én gang,
-  // ikke pr. rejseskift.
+  // null/false = endnu ikke hentet. Vi venter bevidst med at vise noget, til
+  // BÅDE admin-standarden og en eventuel rejsespecifik overstyring er kendt
+  // — ellers ville siden nå at vise en forkert startside et øjeblik, før den
+  // sprang videre til den rigtige.
+  const [adminOrder, setAdminOrder] = useState<string[] | null>(null);
+  const [tripOverride, setTripOverride] = useState<TripNavOverride | null>(null);
+  const [overrideLoaded, setOverrideLoaded] = useState(false);
+
+  // Admin-standarden gælder for alle rejser og er uafhængig af, hvilken
+  // rejse man kigger på — hentes derfor kun én gang.
   useEffect(() => {
     let annulleret = false;
     supabase
@@ -38,24 +46,49 @@ function TripLayoutInner() {
       .maybeSingle()
       .then(({ data }) => {
         if (annulleret) return;
-        setNavOrder(parseTripNavOrder(data?.value as string | undefined));
+        setAdminOrder(parseTripNavOrder(data?.value as string | undefined));
       });
     return () => {
       annulleret = true;
     };
   }, []);
 
-  if (loading || navOrder === null) return <div className="p-8 text-river-500">Indlæser rejse…</div>;
+  // Rejsens egen overstyring, sat fra Overblik-siden. Hentes pr. rejse, og
+  // genhentes hvis man navigerer fra én rejse til en anden uden at hele
+  // layoutet skifter (React Router genbruger komponenten ved skift af
+  // :tripId alene).
+  useEffect(() => {
+    if (!tripId) return;
+    let annulleret = false;
+    setOverrideLoaded(false);
+    supabase
+      .from('trip_nav_overrides')
+      .select('nav_order, disabled_pages')
+      .eq('trip_id', tripId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (annulleret) return;
+        setTripOverride(parseTripNavOverride(data));
+        setOverrideLoaded(true);
+      });
+    return () => {
+      annulleret = true;
+    };
+  }, [tripId]);
+
+  if (loading || adminOrder === null || !overrideLoaded) {
+    return <div className="p-8 text-river-500">Indlæser rejse…</div>;
+  }
   if (!trip) return <div className="p-8 text-river-500">Rejsen blev ikke fundet.</div>;
 
-  // Den globale rækkefølge filtreres til det, der er relevant for netop
-  // denne rejsetype — de tre Gudenå-specifikke sider springes over på
-  // almindelige rejser, men resten beholder deres indbyrdes rækkefølge.
-  const tabs: Tab[] = orderedTripPages(navOrder, trip.trip_type === 'gudenaa').map((page) => ({
-    to: tripPageHref(tripId!, page),
-    label: page.label,
-    end: page.end,
-  }));
+  // Rejsens egen overstyring vinder over admin-standarden, hvis den findes.
+  const tabs: Tab[] = resolveTripPages(adminOrder, tripOverride, trip.trip_type === 'gudenaa').map(
+    (page) => ({
+      to: tripPageHref(tripId!, page),
+      label: page.label,
+      end: page.end,
+    })
+  );
 
   // Rejsens "rod" (fx /rejser/abc123, uden noget efter) er ikke længere en
   // side i sig selv — hver fane, inklusive Overblik, har nu sin egen
