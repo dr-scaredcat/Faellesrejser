@@ -207,6 +207,14 @@ export interface GudenaaStop {
    * fra nord. Null hvis den ikke er angivet endnu.
    */
   bearing_degrees: number | null;
+  /**
+   * Stoppets placering på oversigtskortet, i procent af billedets bredde og
+   * højde. Kortet er nord-op, så retningen mellem to stop kan regnes præcist
+   * ud af deres indbyrdes placering — bearing_degrees er resultatet af den
+   * beregning, ikke en uafhængig værdi.
+   */
+  map_x_percent: number | null;
+  map_y_percent: number | null;
   description: string | null;
   tags?: string[];
 }
