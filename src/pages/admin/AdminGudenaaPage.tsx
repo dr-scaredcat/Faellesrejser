@@ -1,8 +1,12 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
 import { useMutate } from '../../hooks/useMutate';
+import { useToast } from '../../components/Toast';
 import { COMPASS_DEGREES, COMPASS_POINTS, compassFromDegrees } from '../../lib/windEffect';
+import type { GudenaaMapSection } from '../../lib/types';
+
+const MAP_BUCKET = 'gudenaa-maps';
 
 export default function AdminGudenaaPage() {
   const { stops, reload } = useGudenaaStops();
@@ -84,8 +88,9 @@ export default function AdminGudenaaPage() {
   }
 
   return (
-    <section className="card p-5">
-      <h2 className="mb-3 font-semibold text-river-800">Gudenå-stop</h2>
+    <div className="space-y-6">
+      <section className="card p-5">
+        <h2 className="mb-3 font-semibold text-river-800">Gudenå-stop</h2>
       <p className="mb-3 text-sm text-river-500">
         Rækkefølgen følger sejlretningen ned ad åen. Afstand, tid og retning er fra det forrige stop.
       </p>
@@ -281,7 +286,10 @@ export default function AdminGudenaaPage() {
           </div>
         </form>
       )}
-    </section>
+      </section>
+
+      <MapEditor />
+    </div>
   );
 }
 
@@ -292,6 +300,362 @@ export default function AdminGudenaaPage() {
  * finjusteres senere uden at datamodellen skal laves om. Pilen peger den vej,
  * strækket går, så man kan se med det samme om det ser rigtigt ud.
  */
+/**
+ * Kortstyring: upload af oversigtskortet, og markering af de rektangler på
+ * det, der åbner et mere detaljeret udsnit.
+ *
+ * Selve tegningen af et rektangel foregår med musen/fingeren direkte på
+ * oversigtsbilledet: tryk ned, træk, slip. Koordinaterne regnes ud som
+ * procent af billedets bredde/højde ud fra billedets egen boks
+ * (getBoundingClientRect), ikke skærmens — det er derfor afgørende, at
+ * billedet her vises i sin naturlige størrelse UDEN zoom/panorering, som
+ * ellers ville gøre regnestykket forkert. Det er samme grund til, at
+ * ZoomableImage ikke bruges her, kun på selve visningssiden.
+ */
+function MapEditor() {
+  const mutate = useMutate();
+  const { showToast } = useToast();
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const [overviewPath, setOverviewPath] = useState<string | null>(null);
+  const [sections, setSections] = useState<GudenaaMapSection[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [uploadingOverview, setUploadingOverview] = useState(false);
+
+  const [drawing, setDrawing] = useState(false);
+  const [start, setStart] = useState<{ x: number; y: number } | null>(null);
+  const [current, setCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [pendingRect, setPendingRect] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [sectionLabel, setSectionLabel] = useState('');
+  const [sectionFile, setSectionFile] = useState<File | null>(null);
+  const [savingSection, setSavingSection] = useState(false);
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function load() {
+    setLoading(true);
+    const [{ data: setting }, { data: sectionData }] = await Promise.all([
+      supabase
+        .from('admin_settings')
+        .select('value')
+        .eq('key', 'gudenaa_map_overview_path')
+        .maybeSingle(),
+      supabase.from('gudenaa_map_sections').select('*').order('sort_order'),
+    ]);
+    setOverviewPath((setting?.value as string | undefined) ?? null);
+    setSections((sectionData as GudenaaMapSection[]) ?? []);
+    setLoading(false);
+  }
+
+  function urlFor(path: string): string {
+    return supabase.storage.from(MAP_BUCKET).getPublicUrl(path).data.publicUrl;
+  }
+
+  async function handleOverviewUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setUploadingOverview(true);
+    const path = `oversigt.${file.name.split('.').pop() ?? 'png'}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(MAP_BUCKET)
+      .upload(path, file, { upsert: true });
+
+    if (uploadError) {
+      showToast(`Kunne ikke uploade billedet: ${uploadError.message}`, 'error');
+      setUploadingOverview(false);
+      return;
+    }
+
+    const { ok } = await mutate(
+      supabase
+        .from('admin_settings')
+        .upsert({ key: 'gudenaa_map_overview_path', value: path }, { onConflict: 'key' }),
+      { success: 'Oversigtskortet er opdateret.' }
+    );
+    setUploadingOverview(false);
+    if (ok) load();
+  }
+
+  function percentFromEvent(e: React.PointerEvent<HTMLDivElement>) {
+    const rect = imgRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const x = ((e.clientX - rect.left) / rect.width) * 100;
+    const y = ((e.clientY - rect.top) / rect.height) * 100;
+    return { x: Math.min(100, Math.max(0, x)), y: Math.min(100, Math.max(0, y)) };
+  }
+
+  function handlePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (!drawing) return;
+    const p = percentFromEvent(e);
+    if (!p) return;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setStart(p);
+    setCurrent(p);
+  }
+
+  function handlePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!drawing || !start) return;
+    const p = percentFromEvent(e);
+    if (p) setCurrent(p);
+  }
+
+  function handlePointerUp() {
+    if (!drawing || !start || !current) return;
+
+    const rect = {
+      x: Math.min(start.x, current.x),
+      y: Math.min(start.y, current.y),
+      width: Math.abs(current.x - start.x),
+      height: Math.abs(current.y - start.y),
+    };
+
+    setStart(null);
+    setCurrent(null);
+    setDrawing(false);
+
+    if (rect.width < 1 || rect.height < 1) {
+      showToast('Rektanglet er for lille — prøv at trække en større firkant.', 'error');
+      return;
+    }
+    setPendingRect(rect);
+  }
+
+  async function handleSaveSection(e: FormEvent) {
+    e.preventDefault();
+    if (!pendingRect || !sectionFile || !sectionLabel.trim()) return;
+
+    setSavingSection(true);
+    const filename = `sektioner/${crypto.randomUUID()}.${sectionFile.name.split('.').pop() ?? 'png'}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from(MAP_BUCKET)
+      .upload(filename, sectionFile);
+
+    if (uploadError) {
+      showToast(`Kunne ikke uploade billedet: ${uploadError.message}`, 'error');
+      setSavingSection(false);
+      return;
+    }
+
+    const { ok } = await mutate(
+      supabase.from('gudenaa_map_sections').insert({
+        label: sectionLabel.trim(),
+        storage_path: filename,
+        x_percent: pendingRect.x,
+        y_percent: pendingRect.y,
+        width_percent: pendingRect.width,
+        height_percent: pendingRect.height,
+        sort_order: sections.length,
+      }),
+      { success: 'Kortudsnittet er tilføjet.' }
+    );
+
+    setSavingSection(false);
+    if (!ok) return;
+
+    setPendingRect(null);
+    setSectionLabel('');
+    setSectionFile(null);
+    load();
+  }
+
+  async function handleDeleteSection(section: GudenaaMapSection) {
+    if (!confirm(`Slet kortudsnittet "${section.label}"?`)) return;
+    const { ok } = await mutate(supabase.from('gudenaa_map_sections').delete().eq('id', section.id));
+    if (!ok) return;
+    // Selve billedfilen ryddes også op, men fejler dette af en eller anden
+    // grund, er det ikke kritisk — den ligger bare og fylder lidt i Storage.
+    await supabase.storage.from(MAP_BUCKET).remove([section.storage_path]);
+    load();
+  }
+
+  if (loading) return null;
+
+  const overviewUrl = overviewPath ? urlFor(overviewPath) : null;
+  const previewRect =
+    drawing && start && current
+      ? {
+          x: Math.min(start.x, current.x),
+          y: Math.min(start.y, current.y),
+          width: Math.abs(current.x - start.x),
+          height: Math.abs(current.y - start.y),
+        }
+      : null;
+
+  return (
+    <section className="card space-y-4 p-5">
+      <div>
+        <h2 className="font-semibold text-river-800">Kort</h2>
+        <p className="mt-1 text-sm text-river-500">
+          Oversigtskortet vises på "Kort"-siden på Gudenå-ture, med klikbare områder der åbner et mere
+          detaljeret udsnit.
+        </p>
+      </div>
+
+      <div>
+        <label className="label">Oversigtskort (PNG eller JPG)</label>
+        <input
+          type="file"
+          accept="image/png,image/jpeg"
+          onChange={handleOverviewUpload}
+          disabled={uploadingOverview}
+          className="input"
+        />
+        {uploadingOverview && <p className="mt-1 text-xs text-river-400">Uploader…</p>}
+      </div>
+
+      {overviewUrl && (
+        <>
+          <div>
+            {!drawing ? (
+              <button type="button" className="btn-secondary" onClick={() => setDrawing(true)}>
+                + Tilføj kortudsnit
+              </button>
+            ) : (
+              <p className="text-sm text-river-600">
+                Træk en firkant på kortet omkring det område, det detaljerede udsnit dækker.{' '}
+                <button
+                  type="button"
+                  className="text-river-500 underline"
+                  onClick={() => {
+                    setDrawing(false);
+                    setStart(null);
+                    setCurrent(null);
+                  }}
+                >
+                  Annuller
+                </button>
+              </p>
+            )}
+          </div>
+
+          <div
+            className="relative touch-none select-none"
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
+          >
+            <img
+              ref={imgRef}
+              src={overviewUrl}
+              alt="Oversigtskort over Gudenåen"
+              className="block w-full select-none"
+              draggable={false}
+            />
+
+            {sections.map((s) => (
+              <div
+                key={s.id}
+                className="absolute flex items-center justify-center border-2 border-river-500 bg-river-500/15"
+                style={{
+                  left: `${s.x_percent}%`,
+                  top: `${s.y_percent}%`,
+                  width: `${s.width_percent}%`,
+                  height: `${s.height_percent}%`,
+                }}
+              >
+                <span className="rounded bg-river-800/80 px-1.5 py-0.5 text-xs text-white">
+                  {s.label}
+                </span>
+              </div>
+            ))}
+
+            {previewRect && (
+              <div
+                className="absolute border-2 border-dashed border-sand-500 bg-sand-300/25"
+                style={{
+                  left: `${previewRect.x}%`,
+                  top: `${previewRect.y}%`,
+                  width: `${previewRect.width}%`,
+                  height: `${previewRect.height}%`,
+                }}
+              />
+            )}
+          </div>
+        </>
+      )}
+
+      {pendingRect && (
+        <form
+          onSubmit={handleSaveSection}
+          className="space-y-3 rounded-lg border border-river-100 p-3"
+        >
+          <p className="text-sm font-medium text-river-800">Nyt kortudsnit</p>
+          <div>
+            <label className="label">Navn (fx "Tørring – Klostermølle")</label>
+            <input
+              className="input"
+              value={sectionLabel}
+              onChange={(e) => setSectionLabel(e.target.value)}
+              required
+            />
+          </div>
+          <div>
+            <label className="label">Detaljeret kort (PNG eller JPG)</label>
+            <input
+              type="file"
+              accept="image/png,image/jpeg"
+              onChange={(e) => setSectionFile(e.target.files?.[0] ?? null)}
+              className="input"
+              required
+            />
+          </div>
+          <div className="flex gap-2">
+            <button className="btn-primary" disabled={savingSection}>
+              {savingSection ? 'Gemmer…' : 'Gem udsnit'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                setPendingRect(null);
+                setSectionLabel('');
+                setSectionFile(null);
+              }}
+              disabled={savingSection}
+            >
+              Annuller
+            </button>
+          </div>
+        </form>
+      )}
+
+      {sections.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs uppercase tracking-wide text-river-400">Kortudsnit</p>
+          <ul className="divide-y divide-river-100 text-sm">
+            {sections.map((s) => (
+              <li key={s.id} className="flex items-center justify-between py-2">
+                <span className="text-river-700">{s.label}</span>
+                <button
+                  className="text-xs text-red-500 hover:underline"
+                  onClick={() => handleDeleteSection(s)}
+                >
+                  Slet
+                </button>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-river-400">
+            Et udsnits placering kan ikke redigeres direkte — slet det og tegn det igen, hvis det skal
+            flyttes eller ændre størrelse.
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
 function BearingPicker({
   value,
   onChange,

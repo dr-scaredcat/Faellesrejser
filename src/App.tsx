@@ -21,6 +21,7 @@ import AdminNavigationPage from './pages/admin/AdminNavigationPage';
 import AdminGudenaaPage from './pages/admin/AdminGudenaaPage';
 import RoutePlannerPage from './pages/gudenaa/RoutePlannerPage';
 import PositionPage from './pages/gudenaa/PositionPage';
+import MapPage from './pages/gudenaa/MapPage';
 import StatisticsPage from './pages/gudenaa/StatisticsPage';
 import SailingTimesPage from './pages/gudenaa/SailingTimesPage';
 
@@ -115,6 +116,7 @@ export default function App() {
         <Route path="koersel" element={<DrivingPage />} />
         <Route path="ruteplanlaegger" element={<RoutePlannerPage />} />
         <Route path="position" element={<PositionPage />} />
+        <Route path="kort" element={<MapPage />} />
         <Route path="statistik" element={<StatisticsPage />} />
         <Route path="sejltider" element={<SailingTimesPage />} />
       </Route>

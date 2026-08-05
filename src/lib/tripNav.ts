@@ -23,6 +23,7 @@ export const TRIP_NAV_PAGES: TripNavPageDef[] = [
   { key: 'koersel', label: 'Kørsel', segment: 'koersel' },
   { key: 'ruteplanlaegger', label: 'Ruteplanlægger', segment: 'ruteplanlaegger', gudenaaOnly: true },
   { key: 'position', label: 'Position', segment: 'position', gudenaaOnly: true },
+  { key: 'kort', label: 'Kort', segment: 'kort', gudenaaOnly: true },
   { key: 'statistik', label: 'Statistik', segment: 'statistik', gudenaaOnly: true },
   { key: 'sejltider', label: 'Sejltider', segment: 'sejltider', gudenaaOnly: true },
 ];
