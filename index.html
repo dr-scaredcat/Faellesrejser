@@ -2,9 +2,39 @@
 <html lang="da">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Fællesrejser</title>
+    <meta
+      name="description"
+      content="Planlægning af fællesrejser: medlemmer, pakkeliste, rejseplan, regnskab og Gudenåen."
+    />
+
+    <!-- Favicons. favicon.svg bruges af moderne browsere, .ico er fallback til
+         gamle browsere og til Windows-genveje. -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96x96.png" />
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+
+    <!-- Gør siden installerbar som app. Manifestet indeholder navn, ikoner,
+         start-URL og visningstilstand; Android/Chrome læser den, når man
+         vælger "Installer app". -->
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Farver browserens adresselinje og statuslinjen i installeret tilstand.
+         Statisk værdi her (river-600); ThemeContext kan overskrive den ved
+         opstart, hvis I skifter tema. -->
+    <meta name="theme-color" content="#22615c" />
+
+    <!-- iOS/Safari har ikke fuld manifest-understøttelse og skal have
+         tilsvarende oplysninger som meta-tags. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Fællesrejser" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap"
       rel="stylesheet"
