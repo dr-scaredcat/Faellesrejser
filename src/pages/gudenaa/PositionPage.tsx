@@ -14,11 +14,13 @@ export default function PositionPage() {
   const [loading, setLoading] = useState(true);
   const [currentStopId, setCurrentStopId] = useState('');
 
-  // Gårsdagens vandføring, hentet automatisk. Åen er grundvandsfødt og
-  // reagerer langsomt, så i går er et solidt gæt på i dag.
-  const [flowInfo, setFlowInfo] = useState<{ ratio: number; station: string; date: string } | null>(
-    null
-  );
+  // Vandføring for BEGGE stationer. Valget mellem dem træffes først ved
+  // visning, hvor vi kender den valgte position — vandføringen neden for
+  // Tange er en helt anden størrelse end oven for, så det er ikke
+  // ligegyldigt hvilken der bruges.
+  const [flowResults, setFlowResults] = useState<
+    { position: string; station: string; ratio: number }[]
+  >([]);
   const [flowLoading, setFlowLoading] = useState(true);
 
   // Den senest MÅLTE vind — en enkelt observation, ikke et døgnmiddel.
@@ -55,15 +57,13 @@ export default function PositionPage() {
     igaar.setUTCDate(igaar.getUTCDate() - 1);
     const dato = igaar.toISOString().slice(0, 10);
 
-    // Prøver stationerne i samme rækkefølge, som viewet selv foretrækker dem
-    // (opstrøms Tange først) — falder til den anden, hvis den første mangler
-    // data for i går.
     const { data: stationer } = await supabase
       .from('hydro_stations')
-      .select('id, name')
+      .select('id, name, position')
       .eq('is_active', true)
       .order('sort_order');
 
+    const resultater: { position: string; station: string; ratio: number }[] = [];
     for (const station of stationer ?? []) {
       const { data } = await supabase.rpc('flow_context', {
         _station_id: station.id,
@@ -71,12 +71,15 @@ export default function PositionPage() {
       });
       const raekke = data?.[0];
       if (raekke?.ratio_to_median != null) {
-        setFlowInfo({ ratio: Number(raekke.ratio_to_median), station: station.name, date: dato });
-        setFlowLoading(false);
-        return;
+        resultater.push({
+          position: station.position,
+          station: station.name,
+          ratio: Number(raekke.ratio_to_median),
+        });
       }
     }
-    setFlowInfo(null);
+
+    setFlowResults(resultater);
     setFlowLoading(false);
   }
 
@@ -160,6 +163,35 @@ export default function PositionPage() {
   );
 
   const currentIndex = sorted.findIndex((s) => s.id === currentStopId);
+
+  /**
+   * Vandføringen oven for og neden for Tangeværket er vidt forskellige
+   * størrelser — Ulstrup fører mange gange så meget vand som Åstedbro — så
+   * det er afgørende at bruge den station, der hører til dér, hvor man er.
+   *
+   * Tangeværket er selv et stop på ruten og flytter sig ikke, så grænsen
+   * findes ud fra stoppets navn frem for en indstilling. Omdøbes stoppet, så
+   * "Tange" ikke længere indgår, falder siden stille tilbage til den
+   * opstrøms station — den samme opførsel som før dette blev bygget.
+   */
+  const tangeIndex = useMemo(
+    () => sorted.findIndex((s) => /tange/i.test(s.name)),
+    [sorted]
+  );
+
+  const flowInfo = useMemo(() => {
+    if (flowResults.length === 0) return null;
+
+    // Selve Tangeværket regnes med til den nedstrøms side: passerer man
+    // værket, er det den store vandføring, der gælder derfra og videre.
+    const erNedstroems = tangeIndex >= 0 && currentIndex >= tangeIndex;
+    const oensket = erNedstroems ? 'nedstroems_tange' : 'opstroems_tange';
+
+    // Mangler den ønskede station data for i går, er den anden stadig bedre
+    // end ingenting — tallet er jo normaliseret mod stationens egen median.
+    const valgt = flowResults.find((r) => r.position === oensket) ?? flowResults[0];
+    return valgt ? { ...valgt, erNedstroems } : null;
+  }, [flowResults, tangeIndex, currentIndex]);
 
   /**
    * Vejrstationerne er ikke normaliseret som vandføringens (der er ingen
