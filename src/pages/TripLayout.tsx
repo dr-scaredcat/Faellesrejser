@@ -144,7 +144,9 @@ function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: T
             key={tab.to}
             to={tab.to}
             end={tab.end}
-            className={({ isActive }) => `tab flex-1 text-center ${isActive ? 'tab-active' : 'tab-inactive'}`}
+            className={({ isActive }) =>
+              `tab min-w-0 flex-1 truncate text-center ${isActive ? 'tab-active' : 'tab-inactive'}`
+            }
           >
             {tab.label}
           </NavLink>
@@ -161,7 +163,9 @@ function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: T
             key={tab.to}
             to={tab.to}
             end={tab.end}
-            className={({ isActive }) => `tab flex-1 text-center ${isActive ? 'tab-active' : 'tab-inactive'}`}
+            className={({ isActive }) =>
+              `tab min-w-0 flex-1 truncate text-center ${isActive ? 'tab-active' : 'tab-inactive'}`
+            }
           >
             {tab.label}
           </NavLink>
@@ -172,11 +176,11 @@ function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: T
           onClick={() => setOpen((v) => !v)}
           aria-haspopup="menu"
           aria-expanded={open}
-          className={`tab flex flex-1 items-center justify-center gap-1 text-center ${
+          className={`tab flex min-w-0 flex-1 items-center justify-center gap-1 text-center ${
             activeHiddenTab ? 'tab-active' : 'tab-inactive'
           }`}
         >
-          <span className="truncate">{activeHiddenTab ? activeHiddenTab.label : 'Mere'}</span>
+          <span className="min-w-0 truncate">{activeHiddenTab ? activeHiddenTab.label : 'Mere'}</span>
           <svg
             viewBox="0 0 20 20"
             className={`h-3 w-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
