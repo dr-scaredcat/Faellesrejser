@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
 import { TripProvider, useTrip } from '../context/TripContext';
+import { DEFAULT_TRIP_NAV_ORDER, orderedTripPages, parseTripNavOrder, tripPageHref } from '../lib/tripNav';
 
 interface Tab {
   to: string;
@@ -18,25 +20,38 @@ function TripLayoutInner() {
   const { tripId } = useParams();
   const { trip, loading, isEditable } = useTrip();
   const location = useLocation();
+  const [navOrder, setNavOrder] = useState<string[]>(DEFAULT_TRIP_NAV_ORDER);
+
+  // Rækkefølgen sættes på admin-siden "Navigation" og gælder for alle
+  // rejser. Uafhængig af hvilken rejse man kigger på, så den hentes én gang,
+  // ikke pr. rejseskift.
+  useEffect(() => {
+    let annulleret = false;
+    supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('key', 'trip_nav_order')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (annulleret) return;
+        setNavOrder(parseTripNavOrder(data?.value as string | undefined));
+      });
+    return () => {
+      annulleret = true;
+    };
+  }, []);
 
   if (loading) return <div className="p-8 text-river-500">Indlæser rejse…</div>;
   if (!trip) return <div className="p-8 text-river-500">Rejsen blev ikke fundet.</div>;
 
-  const tabs: Tab[] = [
-    { to: `/rejser/${tripId}`, label: 'Overblik', end: true },
-    { to: `/rejser/${tripId}/pakkeliste`, label: 'Pakkeliste' },
-    { to: `/rejser/${tripId}/rejseplan`, label: 'Rejseplan' },
-    { to: `/rejser/${tripId}/regnskab`, label: 'Regnskab' },
-    { to: `/rejser/${tripId}/koersel`, label: 'Kørsel' },
-  ];
-
-  if (trip.trip_type === 'gudenaa') {
-    tabs.push(
-      { to: `/rejser/${tripId}/ruteplanlaegger`, label: 'Ruteplanlægger' },
-      { to: `/rejser/${tripId}/statistik`, label: 'Statistik' },
-      { to: `/rejser/${tripId}/sejltider`, label: 'Sejltider' }
-    );
-  }
+  // Den globale rækkefølge filtreres til det, der er relevant for netop
+  // denne rejsetype — de tre Gudenå-specifikke sider springes over på
+  // almindelige rejser, men resten beholder deres indbyrdes rækkefølge.
+  const tabs: Tab[] = orderedTripPages(navOrder, trip.trip_type === 'gudenaa').map((page) => ({
+    to: tripPageHref(tripId!, page),
+    label: page.label,
+    end: page.end,
+  }));
 
   function isTabActive(tab: Tab): boolean {
     return tab.end ? location.pathname === tab.to : location.pathname.startsWith(tab.to);
