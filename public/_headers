@@ -27,3 +27,18 @@
 # så der er ingen risiko for at få en forældet fil serveret.
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+# Ikoner har faste filnavne uden hash, så de må ikke caches for evigt — men en
+# dag ad gangen er rigeligt. Skifter I ikon, slår det igennem inden for et døgn
+# (eller med det samme, hvis I purger cachen i Cloudflare).
+/*.png
+  Cache-Control: public, max-age=86400
+/*.ico
+  Cache-Control: public, max-age=86400
+/*.svg
+  Cache-Control: public, max-age=86400
+
+# Manifestet bevidst IKKE cachet længe — det er billigt at hente og skal slå
+# igennem med det samme, hvis I ændrer navn, farver eller ikoner.
+/site.webmanifest
+  Cache-Control: no-cache
