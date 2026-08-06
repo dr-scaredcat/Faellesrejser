@@ -227,9 +227,18 @@ export default function ExpensesPage() {
     return CATEGORY_COLORS[cat] ?? FALLBACK_PALETTE[index % FALLBACK_PALETTE.length];
   }
 
+  // Hvor mange personer hvert medlem betaler for. Er kun den ene halvdel af
+  // et par tilmeldt appen, står vedkommende med vægt 2, og udgifterne deles
+  // efter hoveder frem for efter brugerkonti.
+  const shareWeights = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const m of members) map[m.user_id] = m.share_weight ?? 1;
+    return map;
+  }, [members]);
+
   const balances = useMemo(
-    () => computeNetBalances(enrichedExpenses, settlements, namesById),
-    [enrichedExpenses, settlements, namesById]
+    () => computeNetBalances(enrichedExpenses, settlements, namesById, shareWeights),
+    [enrichedExpenses, settlements, namesById, shareWeights]
   );
   const displayBalances = groupByPair
     ? groupBalancesByPair(balances, pairs, namesById)
