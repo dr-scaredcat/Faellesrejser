@@ -160,14 +160,30 @@ export default function TripOverviewPage() {
 
   async function handleShareWeight(userId: string, weight: number) {
     if (!trip) return;
-    const { ok } = await mutate(
+
+    // .select() er ikke til pynt: bliver opdateringen afvist af RLS, ramte
+    // den nul rækker — og det regner Postgres ikke for en fejl. Uden at få
+    // rækkerne tilbage ville vi tro, det gik godt, mens værdien i praksis
+    // sprang tilbage ved næste indlæsning.
+    const { data, ok } = await mutate(
       supabase
         .from('trip_members')
         .update({ share_weight: weight })
         .eq('trip_id', trip.id)
         .eq('user_id', userId)
+        .select()
     );
-    if (ok) refresh();
+    if (!ok) return;
+
+    if (!data || (data as unknown[]).length === 0) {
+      showToast(
+        'Ændringen blev ikke gemt — du har muligvis ikke rettigheder til det, eller rejsen er arkiveret.',
+        'error'
+      );
+      return;
+    }
+
+    refresh();
   }
 
   async function handleRemoveMember(userId: string) {
