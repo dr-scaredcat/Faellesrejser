@@ -158,6 +158,18 @@ export default function TripOverviewPage() {
     return blockers;
   }
 
+  async function handleShareWeight(userId: string, weight: number) {
+    if (!trip) return;
+    const { ok } = await mutate(
+      supabase
+        .from('trip_members')
+        .update({ share_weight: weight })
+        .eq('trip_id', trip.id)
+        .eq('user_id', userId)
+    );
+    if (ok) refresh();
+  }
+
   async function handleRemoveMember(userId: string) {
     if (!trip) return;
 
@@ -187,25 +199,51 @@ export default function TripOverviewPage() {
   return (
     <div className="space-y-6">
       <div className="card p-5">
-        <h2 className="mb-3 font-semibold text-river-800">Medlemmer</h2>
+        <h2 className="mb-1 font-semibold text-river-800">Medlemmer</h2>
+        <p className="mb-3 text-sm text-river-500">
+          "Betaler for" bruges i regnskabet. Er kun den ene halvdel af et par tilmeldt appen, sættes
+          den til 2, så udgifterne deles efter hoveder frem for efter brugerkonti.
+        </p>
         <ul className="mb-4 divide-y divide-river-100">
           {members.map((m) => (
-            <li key={m.user_id} className="flex items-center justify-between py-2 text-sm">
-              <span>
+            <li key={m.user_id} className="flex items-center justify-between gap-3 py-2 text-sm">
+              <span className="min-w-0">
                 {namesById[m.user_id] ?? '—'}
                 {trip?.created_by === m.user_id && (
                   <span className="ml-2 text-xs text-sand-500">Opretter</span>
                 )}
               </span>
-              {isCreatorOrAdmin && isEditable && trip?.created_by !== m.user_id && (
-                <button
-                  className="text-xs text-red-500 hover:underline disabled:opacity-50"
-                  disabled={checkingRemoval === m.user_id}
-                  onClick={() => handleRemoveMember(m.user_id)}
-                >
-                  {checkingRemoval === m.user_id ? 'Tjekker…' : 'Fjern'}
-                </button>
-              )}
+              <div className="flex shrink-0 items-center gap-3">
+                {isEditable ? (
+                  <label className="flex items-center gap-1 text-xs text-river-500">
+                    Betaler for
+                    <select
+                      className="input w-auto py-1 text-xs"
+                      value={m.share_weight ?? 1}
+                      onChange={(e) => handleShareWeight(m.user_id, Number(e.target.value))}
+                    >
+                      {[1, 2, 3, 4, 5, 6].map((n) => (
+                        <option key={n} value={n}>
+                          {n}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : (
+                  (m.share_weight ?? 1) > 1 && (
+                    <span className="text-xs text-river-400">Betaler for {m.share_weight}</span>
+                  )
+                )}
+                {isCreatorOrAdmin && isEditable && trip?.created_by !== m.user_id && (
+                  <button
+                    className="text-xs text-red-500 hover:underline disabled:opacity-50"
+                    disabled={checkingRemoval === m.user_id}
+                    onClick={() => handleRemoveMember(m.user_id)}
+                  >
+                    {checkingRemoval === m.user_id ? 'Tjekker…' : 'Fjern'}
+                  </button>
+                )}
+              </div>
             </li>
           ))}
         </ul>

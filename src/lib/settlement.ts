@@ -19,6 +19,19 @@ const EPSILON = 0.01;
 /**
  * Beregner nettosaldo pr. person.
  *
+ * VÆGTE
+ *
+ * Hvert medlem har en vægt: hvor mange personer de betaler for. Er kun den
+ * ene halvdel af et par tilmeldt appen, står vedkommende med vægt 2, og
+ * udgiften deles så efter hoveder frem for efter brugerkonti. Uden det ville
+ * to par med tre tilmeldte give en tredjedel til den, der er alene på appen,
+ * i stedet for halvdelen.
+ *
+ * Vægt 1 for alle giver præcis samme resultat som en ligelig deling, så
+ * eksisterende rejser er upåvirkede.
+ *
+ * AFREGNING
+ *
  * Der er to måder at gøre en post op på, og de gør hver sit:
  *
  *  - `expense.is_settled` betyder, at hele posten er afregnet uden om det
@@ -33,18 +46,26 @@ const EPSILON = 0.01;
 export function computeNetBalances(
   expenses: Expense[],
   settlements: Settlement[],
-  namesById: Record<string, string>
+  namesById: Record<string, string>,
+  weights: Record<string, number> = {}
 ): Record<string, number> {
   const balances: Record<string, number> = {};
+  const weightOf = (userId: string) => {
+    const w = Number(weights[userId]);
+    return isFinite(w) && w > 0 ? w : 1;
+  };
 
   for (const exp of expenses) {
     if (exp.is_settled) continue;
     const participants =
       exp.participant_ids && exp.participant_ids.length > 0 ? exp.participant_ids : [exp.paid_by];
-    const share = Number(exp.amount) / participants.length;
+
+    const totalWeight = participants.reduce((sum, uid) => sum + weightOf(uid), 0);
+    if (totalWeight <= 0) continue;
 
     balances[exp.paid_by] = (balances[exp.paid_by] ?? 0) + Number(exp.amount);
     for (const uid of participants) {
+      const share = (Number(exp.amount) * weightOf(uid)) / totalWeight;
       balances[uid] = (balances[uid] ?? 0) - share;
     }
   }

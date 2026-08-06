@@ -26,6 +26,11 @@ export interface TripMember {
   user_id: string;
   invited_by: string | null;
   joined_at: string;
+  /**
+   * Hvor mange personer dette medlem betaler for i regnskabet. 1 = kun sig
+   * selv; 2 = fx et par, hvor kun den ene har en bruger i appen.
+   */
+  share_weight: number;
   profile?: Profile;
 }
 
