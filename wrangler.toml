@@ -1,0 +1,12 @@
+name = "faellesrejserapp"
+compatibility_date = "2026-07-26"
+
+# Worker der udelukkende server statiske filer (den bundlede React-app fra
+# Vite) via Cloudflares indbyggede "Static Assets"-funktion. Der er ingen
+# server-side Worker-kode nødvendig — appen taler direkte med Supabase fra
+# browseren, så en ren asset-Worker er alt der skal til.
+[assets]
+directory = "./dist"
+# Sørger for at alle ukendte stier (fx /rejser/123/pakkeliste ved
+# genindlæsning) falder tilbage til index.html, som React Router så styrer.
+not_found_handling = "single-page-application"

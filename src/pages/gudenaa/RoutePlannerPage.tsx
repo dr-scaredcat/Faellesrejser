@@ -1,27 +1,50 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { useTrip } from '../../context/TripContext';
+import { useToast } from '../../components/Toast';
+import { useMutate } from '../../hooks/useMutate';
 import { useGudenaaStops } from '../../hooks/useGudenaaStops';
-import { confidenceInterval95, formatHours } from '../../lib/stats';
-import type { GudenaaStop, RoutePlan, RoutePlanDay, SailingTime } from '../../lib/types';
+import { formatHours } from '../../lib/stats';
+import { groupSailingDays } from '../../lib/gudenaaStats';
+import { describeModel, fitPaceModel, predictTime, type PaceModel } from '../../lib/paceModel';
+import { resultantCourse, windEffect } from '../../lib/windEffect';
+import { suggestRoute, type RouteObjective, type RouteSuggestion } from '../../lib/routeSuggestion';
+import type { GudenaaStop, RoutePlan, RoutePlanDay, SailingTimeWithFlow } from '../../lib/types';
 
 export default function RoutePlannerPage() {
   const { trip, isEditable } = useTrip();
   const { stops, loading: stopsLoading } = useGudenaaStops();
+  const { showToast } = useToast();
+  const mutate = useMutate();
+
   const [plan, setPlan] = useState<RoutePlan | null>(null);
   const [days, setDays] = useState<RoutePlanDay[]>([]);
-  const [sailingTimes, setSailingTimes] = useState<SailingTime[]>([]);
+  const [sailingTimes, setSailingTimes] = useState<SailingTimeWithFlow[]>([]);
   const [numDays, setNumDays] = useState(3);
   const [startStopId, setStartStopId] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // Kun til forslagsknappen. Slutstedet gemmes ikke på planen — det er
+  // dag-rækkerne der er sandheden, netop fordi ruten ofte laves om undervejs.
+  const [targetStopId, setTargetStopId] = useState('');
+  const [objective, setObjective] = useState<RouteObjective>('even');
+  const [maxHours, setMaxHours] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
+
+  // Forslaget skrives IKKE til databasen med det samme. Det vises til
+  // godkendelse først, så en allerede udfyldt rute ikke bliver overskrevet af
+  // et uheld — man skal aktivt trykke "Godkend forslag".
+  const [suggestionPreview, setSuggestionPreview] = useState<RouteSuggestion | null>(null);
+
   useEffect(() => {
     if (trip) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip?.id]);
 
   async function load() {
     if (!trip) return;
     setLoading(true);
+
     const { data: planData } = await supabase
       .from('gudenaa_route_plans')
       .select('*')
@@ -40,54 +63,156 @@ export default function RoutePlannerPage() {
       setDays((dayData as RoutePlanDay[]) ?? []);
     }
 
-    const { data: sailData } = await supabase.from('gudenaa_sailing_times').select('*');
-    setSailingTimes((sailData as SailingTime[]) ?? []);
+    // Viewet leverer sejltiderne sammen med vandføringen for dagen,
+    // normaliseret i forhold til hvad der er normalt for årstiden.
+    const { data: sailData } = await supabase.from('sailing_times_with_flow').select('*');
+    setSailingTimes((sailData as unknown as SailingTimeWithFlow[]) ?? []);
 
     setLoading(false);
   }
 
-  async function createOrUpdatePlan() {
-    if (!trip || !startStopId) return;
+  /**
+   * Sørger for at der findes en plan med præcis numDays dag-rækker, og
+   * returnerer de friske rækker. Bruges både af "Gem ruteplan" og af
+   * forslagsknappen.
+   */
+  async function ensurePlan(): Promise<{ planId: string; days: RoutePlanDay[] } | null> {
+    if (!trip || !startStopId) return null;
 
     let planId = plan?.id;
+
     if (!planId) {
-      const { data, error } = await supabase
-        .from('gudenaa_route_plans')
-        .insert({ trip_id: trip.id, start_stop_id: startStopId, num_days: numDays })
-        .select()
-        .single();
-      if (error || !data) return;
-      planId = data.id;
+      const { data, ok } = await mutate(
+        supabase
+          .from('gudenaa_route_plans')
+          .insert({ trip_id: trip.id, start_stop_id: startStopId, num_days: numDays })
+          .select()
+          .single()
+      );
+      if (!ok || !data) return null;
+      planId = (data as RoutePlan).id;
       setPlan(data as RoutePlan);
     } else {
-      await supabase
-        .from('gudenaa_route_plans')
-        .update({ start_stop_id: startStopId, num_days: numDays })
-        .eq('id', planId);
+      const { ok } = await mutate(
+        supabase
+          .from('gudenaa_route_plans')
+          .update({ start_stop_id: startStopId, num_days: numDays })
+          .eq('id', planId)
+      );
+      if (!ok) return null;
     }
 
-    // Sørg for at der findes en dag-række for hver dag 1..numDays.
     const existingDayNumbers = new Set(days.map((d) => d.day_number));
     const toInsert = [];
     for (let i = 1; i <= numDays; i++) {
-      if (!existingDayNumbers.has(i)) toInsert.push({ route_plan_id: planId, day_number: i, end_stop_id: null });
+      if (!existingDayNumbers.has(i)) {
+        toInsert.push({ route_plan_id: planId, day_number: i, end_stop_id: null });
+      }
     }
-    if (toInsert.length > 0) await supabase.from('gudenaa_route_plan_days').insert(toInsert);
+    if (toInsert.length > 0) {
+      const { ok } = await mutate(supabase.from('gudenaa_route_plan_days').insert(toInsert));
+      if (!ok) return null;
+    }
 
     // Fjern overskydende dage hvis antallet blev sat ned.
-    await supabase
-      .from('gudenaa_route_plan_days')
-      .delete()
-      .eq('route_plan_id', planId)
-      .gt('day_number', numDays);
+    await mutate(
+      supabase
+        .from('gudenaa_route_plan_days')
+        .delete()
+        .eq('route_plan_id', planId)
+        .gt('day_number', numDays)
+    );
 
-    load();
+    const { data: dayData } = await supabase
+      .from('gudenaa_route_plan_days')
+      .select('*')
+      .eq('route_plan_id', planId)
+      .order('day_number');
+
+    return { planId, days: (dayData as RoutePlanDay[]) ?? [] };
+  }
+
+  async function createOrUpdatePlan() {
+    const result = await ensurePlan();
+    if (result) load();
   }
 
   async function setDayEndStop(dayNumber: number, endStopId: string) {
     const day = days.find((d) => d.day_number === dayNumber);
     if (!day) return;
-    await supabase.from('gudenaa_route_plan_days').update({ end_stop_id: endStopId || null }).eq('id', day.id);
+    const { ok } = await mutate(
+      supabase
+        .from('gudenaa_route_plan_days')
+        .update({ end_stop_id: endStopId || null })
+        .eq('id', day.id)
+    );
+    if (ok) load();
+  }
+
+  /**
+   * Beregner et forslag og viser det til godkendelse. Skriver IKKE noget til
+   * databasen — det sker først når `confirmSuggestion` kaldes.
+   */
+  function computeSuggestion() {
+    if (!startStopId || !targetStopId) return;
+
+    const cap = maxHours.trim() ? Number(maxHours) : null;
+    if (cap != null && (!isFinite(cap) || cap <= 0)) {
+      showToast('Grænsen for timer pr. dag skal være et positivt tal.', 'error');
+      return;
+    }
+
+    const result = suggestRoute(stops, startStopId, targetStopId, numDays, {
+      objective,
+      maxHoursPerDay: cap,
+    });
+
+    if (!result.ok) {
+      showToast(result.reason, 'error');
+      return;
+    }
+
+    setSuggestionPreview(result.suggestion);
+  }
+
+  function dismissSuggestion() {
+    setSuggestionPreview(null);
+  }
+
+  /** Skriver det godkendte forslag ind i ruteplanen. */
+  async function confirmSuggestion() {
+    if (!suggestionPreview) return;
+
+    setSuggesting(true);
+    const planResult = await ensurePlan();
+    if (!planResult) {
+      setSuggesting(false);
+      return;
+    }
+
+    for (const suggested of suggestionPreview.days) {
+      const row = planResult.days.find((d) => d.day_number === suggested.dayNumber);
+      if (!row) continue;
+      const { ok } = await mutate(
+        supabase
+          .from('gudenaa_route_plan_days')
+          .update({ end_stop_id: suggested.endStopId })
+          .eq('id', row.id)
+      );
+      if (!ok) {
+        setSuggesting(false);
+        return;
+      }
+    }
+
+    setSuggesting(false);
+    showToast(
+      `Ruten er delt i ${suggestionPreview.days.length} dage. Længste dag er ${formatHours(
+        suggestionPreview.longestDayHours
+      )}.`,
+      'success'
+    );
+    setSuggestionPreview(null);
     load();
   }
 
@@ -97,13 +222,10 @@ export default function RoutePlannerPage() {
     return map;
   }, [stops]);
 
-  const sortedStops = [...stops].sort((a, b) => a.sort_order - b.sort_order);
+  const sortedStops = useMemo(() => [...stops].sort((a, b) => a.sort_order - b.sort_order), [stops]);
 
   // Beregner distance/tid mellem to stop ud fra kumulativ position i den globale rækkefølge.
   function segmentBetween(fromId: string, toId: string) {
-    const from = stopById[fromId];
-    const to = stopById[toId];
-    if (!from || !to) return { km: 0, hours: 0 };
     const fromIdx = sortedStops.findIndex((s) => s.id === fromId);
     const toIdx = sortedStops.findIndex((s) => s.id === toId);
     if (fromIdx === -1 || toIdx === -1 || toIdx < fromIdx) return { km: 0, hours: 0 };
@@ -128,46 +250,87 @@ export default function RoutePlannerPage() {
       if (to) current = to;
     }
     return results;
-  }, [startStopId, numDays, days, stops]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startStopId, numDays, days, sortedStops]);
 
   const totalKm = dayResults.reduce((s, d) => s + d.km, 0);
   const totalHours = dayResults.reduce((s, d) => s + d.hours, 0);
 
-  // Historisk hastighed baseret på alle loggede sejltider (km / sejltid uden pauser).
-  const historicalSpeeds = useMemo(() => {
-    return sailingTimes
-      .map((st) => {
-        const seg = segmentBetween(st.start_stop_id, st.end_stop_id);
-        if (seg.km === 0 || st.sailing_time_hours === 0) return null;
-        return seg.km / st.sailing_time_hours;
-      })
-      .filter((v): v is number => v !== null && isFinite(v) && v > 0);
-  }, [sailingTimes, stops]);
-
-  const historicalSpeedsWithPauses = useMemo(() => {
-    return sailingTimes
-      .map((st) => {
-        const seg = segmentBetween(st.start_stop_id, st.end_stop_id);
-        if (seg.km === 0 || st.total_time_hours === 0) return null;
-        return seg.km / st.total_time_hours;
-      })
-      .filter((v): v is number => v !== null && isFinite(v) && v > 0);
-  }, [sailingTimes, stops]);
-
-  const speedCI = confidenceInterval95(historicalSpeeds);
-  const speedWithPausesCI = confidenceInterval95(historicalSpeedsWithPauses);
-
-  function estimateFromSpeed(ci: ReturnType<typeof confidenceInterval95>, distanceKm: number) {
-    if (ci.mean === 0) return null;
-    return {
-      mean: distanceKm / ci.mean,
-      low: ci.high > 0 ? distanceKm / ci.high : 0,
-      high: ci.low > 0 ? distanceKm / ci.low : Infinity,
-    };
+  // Modellerne fittes på grupperede sejldage, ikke på de rå registreringer.
+  // Logger tre personer den samme dag, er det stadig én observation af, hvor
+  // lang tid en dag på åen tager. Talte man dem hver for sig, ville
+  // prædiktionsintervallerne blive for smalle.
+  function courseFor(startStopId: string, endStopId: string) {
+    const fromIdx = sortedStops.findIndex((s) => s.id === startStopId);
+    const toIdx = sortedStops.findIndex((s) => s.id === endStopId);
+    if (fromIdx === -1 || toIdx === -1 || toIdx <= fromIdx) return null;
+    const segments = [];
+    for (let i = fromIdx + 1; i <= toIdx; i++) {
+      segments.push({
+        distanceKm: sortedStops[i].distance_from_previous_km,
+        bearingDegrees: sortedStops[i].bearing_degrees,
+      });
+    }
+    return resultantCourse(segments);
   }
 
-  const pureEstimate = estimateFromSpeed(speedCI, totalKm);
-  const withPausesEstimate = estimateFromSpeed(speedWithPausesCI, totalKm);
+  const sailingDays = useMemo(
+    () => groupSailingDays(stops, sailingTimes),
+    [stops, sailingTimes]
+  );
+
+  const observations = useMemo(
+    () =>
+      sailingDays.map((dag) => {
+        const course = courseFor(dag.startStopId, dag.endStopId);
+        const effect =
+          course && dag.windSpeedMs != null && dag.windDirDegrees != null
+            ? windEffect(course, dag.windSpeedMs, dag.windDirDegrees)
+            : null;
+        return {
+          distanceKm: dag.km,
+          sailing: dag.sailingHours,
+          total: dag.totalHours,
+          flowRatio: dag.flowRatio,
+          tailwindMs: effect?.tailwindMs ?? null,
+        };
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sailingDays, sortedStops]
+  );
+
+  const pureModel = useMemo(
+    () =>
+      fitPaceModel(
+        observations.map((o) => ({
+          distanceKm: o.distanceKm,
+          hours: o.sailing,
+          flowRatio: o.flowRatio,
+          tailwindMs: o.tailwindMs,
+        }))
+      ),
+    [observations]
+  );
+  const pausesModel = useMemo(
+    () =>
+      fitPaceModel(
+        observations.map((o) => ({
+          distanceKm: o.distanceKm,
+          hours: o.total,
+          flowRatio: o.flowRatio,
+          tailwindMs: o.tailwindMs,
+        }))
+      ),
+    [observations]
+  );
+
+  function estimate(model: PaceModel | null, km: number) {
+    if (!model || km <= 0) return null;
+    return predictTime(model, km);
+  }
+
+  const pureEstimate = estimate(pureModel, totalKm);
+  const withPausesEstimate = estimate(pausesModel, totalKm);
 
   if (loading || stopsLoading) return <p className="text-river-500">Indlæser…</p>;
 
@@ -212,19 +375,175 @@ export default function RoutePlannerPage() {
         )}
       </div>
 
+      {isEditable && (
+        <div className="card space-y-4 p-5">
+          <div>
+            <h2 className="font-semibold text-river-800">Foreslå rute</h2>
+            <p className="mt-1 text-sm text-river-500">
+              Fordeler strækningen på dine dage. Forslaget skriver slutstederne ind, og du kan rette hver
+              enkelt dag bagefter — ruten laver sig alligevel om, når vejret driller.
+            </p>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="label">Slutsted</label>
+              <select
+                className="input"
+                value={targetStopId}
+                onChange={(e) => setTargetStopId(e.target.value)}
+              >
+                <option value="">Vælg slutsted</option>
+                {sortedStops
+                  .filter((s) => {
+                    if (!startStopId) return true;
+                    const startIdx = sortedStops.findIndex((x) => x.id === startStopId);
+                    const idx = sortedStops.findIndex((x) => x.id === s.id);
+                    return idx > startIdx;
+                  })
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Fordeling</label>
+              <select
+                className="input"
+                value={objective}
+                onChange={(e) => setObjective(e.target.value as RouteObjective)}
+              >
+                <option value="even">Så ensartede dage som muligt</option>
+                <option value="minimax">Så kort en længste dag som muligt</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="sm:w-1/2">
+            <label className="label">Højst timer pr. dag (valgfrit)</label>
+            <input
+              type="number"
+              step="0.5"
+              min="0.5"
+              className="input"
+              placeholder="fx 6"
+              value={maxHours}
+              onChange={(e) => setMaxHours(e.target.value)}
+            />
+          </div>
+
+          <button
+            className="btn-secondary"
+            onClick={computeSuggestion}
+            disabled={!startStopId || !targetStopId}
+          >
+            Foreslå rute
+          </button>
+        </div>
+      )}
+
+      {suggestionPreview && (
+        <div className="card space-y-4 border-2 border-river-300 p-5">
+          <div>
+            <h2 className="font-semibold text-river-800">Forslag til rute</h2>
+            <p className="mt-1 text-sm text-river-500">
+              Ruten er ikke gemt endnu. Gennemgå forslaget herunder, og godkend eller afslå det — jeres
+              nuværende rute ændres ikke, før du trykker "Godkend forslag".
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            {suggestionPreview.days.map((forslagsdag) => {
+              const forslagEstimat = estimate(pureModel, forslagsdag.distanceKm);
+              const eksisterende = dayResults.find((d) => d.day === forslagsdag.dayNumber);
+              const eksisterendeUdfyldt = !!eksisterende?.to;
+              const eksisterendeEstimat = eksisterendeUdfyldt
+                ? estimate(pureModel, eksisterende!.km)
+                : null;
+
+              const kmDiff = eksisterendeUdfyldt ? forslagsdag.distanceKm - eksisterende!.km : null;
+              const timerDiff =
+                forslagEstimat && eksisterendeEstimat
+                  ? forslagEstimat.hours - eksisterendeEstimat.hours
+                  : null;
+
+              return (
+                <div key={forslagsdag.dayNumber} className="rounded-lg border border-river-100 p-3">
+                  <p className="mb-1 text-sm font-medium text-river-800">Dag {forslagsdag.dayNumber}</p>
+
+                  <p className="text-sm text-river-600">
+                    <span className="text-river-400">Forslag:</span> {forslagsdag.startStopName} →{' '}
+                    {forslagsdag.endStopName} · {forslagsdag.distanceKm.toFixed(1)} km · skematid ca.{' '}
+                    {formatHours(forslagsdag.sailTimeHours)}
+                    {forslagEstimat && (
+                      <> · forventet ca. {formatHours(forslagEstimat.hours)}</>
+                    )}
+                  </p>
+
+                  {eksisterendeUdfyldt && eksisterende ? (
+                    <>
+                      <p className="mt-1 text-sm text-river-500">
+                        <span className="text-river-400">Nuværende:</span>{' '}
+                        {stopById[eksisterende.from]?.name ?? '—'} →{' '}
+                        {stopById[eksisterende.to as string]?.name ?? '—'} ·{' '}
+                        {eksisterende.km.toFixed(1)} km
+                        {eksisterendeEstimat && (
+                          <> · forventet ca. {formatHours(eksisterendeEstimat.hours)}</>
+                        )}
+                      </p>
+                      <p className="mt-1 text-xs text-river-400">
+                        Forskel: {kmDiff != null && kmDiff >= 0 ? '+' : ''}
+                        {kmDiff?.toFixed(1)} km
+                        {timerDiff != null && (
+                          <>
+                            {' · '}
+                            {timerDiff >= 0 ? '+' : '-'}
+                            {formatHours(Math.abs(timerDiff))} {timerDiff >= 0 ? 'længere' : 'kortere'}
+                          </>
+                        )}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="mt-1 text-xs text-river-400">
+                      Dagen er ikke udfyldt i den nuværende rute endnu.
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-2">
+            <button className="btn-primary" onClick={confirmSuggestion} disabled={suggesting}>
+              {suggesting ? 'Gemmer…' : 'Godkend forslag'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={dismissSuggestion}
+              disabled={suggesting}
+            >
+              Afslå
+            </button>
+          </div>
+        </div>
+      )}
+
       {startStopId && plan && (
         <div className="space-y-4">
           {dayResults.map((d) => {
             const toStop = d.to ? stopById[d.to] : null;
             const fromIdx = sortedStops.findIndex((s) => s.id === d.from);
             const options = sortedStops.slice(fromIdx + 1);
+            const dayPure = estimate(pureModel, d.km);
+            const dayPauses = estimate(pausesModel, d.km);
             return (
               <div key={d.day} className="card p-5">
                 <div className="mb-2 flex items-center justify-between">
                   <h3 className="font-semibold text-river-800">Dag {d.day}</h3>
-                  <span className="text-sm text-river-500">
-                    fra {stopById[d.from]?.name ?? '—'}
-                  </span>
+                  <span className="text-sm text-river-500">fra {stopById[d.from]?.name ?? '—'}</span>
                 </div>
                 <select
                   className="input mb-2"
@@ -242,13 +561,28 @@ export default function RoutePlannerPage() {
                 {toStop && (
                   <>
                     <p className="text-sm text-river-600">
-                      {d.km.toFixed(1)} km · ca. {formatHours(d.hours)}
+                      {d.km.toFixed(1)} km · skematid ca. {formatHours(d.hours)}
                     </p>
+                    {dayPure && (
+                      <p className="mt-1 text-xs text-river-500">
+                        Forventet sejltid: ca. {formatHours(dayPure.hours)} [{formatHours(dayPure.low)} :{' '}
+                        {formatHours(dayPure.high)}]
+                      </p>
+                    )}
+                    {dayPauses && (
+                      <p className="text-xs text-river-500">
+                        Forventet tid inkl. pauser: ca. {formatHours(dayPauses.hours)} [
+                        {formatHours(dayPauses.low)} : {formatHours(dayPauses.high)}]
+                      </p>
+                    )}
                     {toStop.description && <p className="mt-1 text-sm text-river-500">{toStop.description}</p>}
                     {toStop.tags && toStop.tags.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
                         {toStop.tags.map((tag) => (
-                          <span key={tag} className="rounded-full bg-river-100 px-2 py-0.5 text-xs text-river-600">
+                          <span
+                            key={tag}
+                            className="rounded-full bg-river-100 px-2 py-0.5 text-xs text-river-600"
+                          >
                             {tag}
                           </span>
                         ))}
@@ -266,23 +600,31 @@ export default function RoutePlannerPage() {
               {totalKm.toFixed(1)} km i alt · skematid ca. {formatHours(totalHours)}
             </p>
 
-            {pureEstimate && speedCI.n >= 2 ? (
+            {pureEstimate && pureModel ? (
               <p className="mt-2 text-sm text-river-600">
-                Estimeret ren sejltid ud fra historisk gennemsnitsfart ({speedCI.n} datapunkter):{' '}
-                <strong>{formatHours(pureEstimate.mean)}</strong> [{formatHours(pureEstimate.low)} :{' '}
-                {formatHours(pureEstimate.high)}] (95% konfidensinterval)
+                Forventet ren sejltid: <strong>{formatHours(pureEstimate.hours)}</strong> [
+                {formatHours(pureEstimate.low)} : {formatHours(pureEstimate.high)}]
               </p>
             ) : (
               <p className="mt-2 text-xs text-river-400">
-                For få loggede sejltider endnu til at beregne et pålideligt estimat (kræver mindst 2 relevante
+                For få loggede sejltider endnu til at beregne et pålideligt estimat (kræver mindst 2
                 registreringer på "Sejltider"-siden).
               </p>
             )}
 
-            {withPausesEstimate && speedWithPausesCI.n >= 2 && (
+            {withPausesEstimate && (
               <p className="mt-1 text-sm text-river-600">
-                Estimeret tid inkl. pauser: <strong>{formatHours(withPausesEstimate.mean)}</strong> [
+                Forventet tid inkl. pauser: <strong>{formatHours(withPausesEstimate.hours)}</strong> [
                 {formatHours(withPausesEstimate.low)} : {formatHours(withPausesEstimate.high)}]
+              </p>
+            )}
+
+            {pureModel && (
+              <p className="mt-3 text-xs text-river-400">
+                Intervallet er et 95% prædiktionsinterval: det er spændet, en enkelt ny tur forventes at
+                lande indenfor — ikke usikkerheden på gennemsnittet. Bygger på {describeModel(pureModel)}.
+                {(pureModel.usesFlow || pureModel.usesWind) &&
+                  ' Estimatet gælder ved normale forhold for årstiden.'}
               </p>
             )}
           </div>

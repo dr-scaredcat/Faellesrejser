@@ -1,27 +1,108 @@
-import { NavLink, Outlet, useParams } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { Navigate, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
 import { TripProvider, useTrip } from '../context/TripContext';
+import {
+  parseTripNavOrder,
+  parseTripNavOverride,
+  resolveTripPages,
+  tripPageHref,
+  type TripNavOverride,
+} from '../lib/tripNav';
+
+interface Tab {
+  to: string;
+  label: string;
+  end?: boolean;
+}
+
+// Hvor mange faner der vises direkte på mobil, før resten samles under
+// "Mere". Den fjerde plads er enten selve "Mere"-knappen, eller — hvis den
+// aktive side ligger blandt de skjulte — navnet på netop den side, så man
+// aldrig er i tvivl om, hvor man befinder sig.
+const MOBILE_PRIMARY_COUNT = 3;
 
 function TripLayoutInner() {
   const { tripId } = useParams();
   const { trip, loading, isEditable } = useTrip();
+  const location = useLocation();
 
-  if (loading) return <div className="p-8 text-river-500">Indlæser rejse…</div>;
+  // null/false = endnu ikke hentet. Vi venter bevidst med at vise noget, til
+  // BÅDE admin-standarden og en eventuel rejsespecifik overstyring er kendt
+  // — ellers ville siden nå at vise en forkert startside et øjeblik, før den
+  // sprang videre til den rigtige.
+  const [adminOrder, setAdminOrder] = useState<string[] | null>(null);
+  const [tripOverride, setTripOverride] = useState<TripNavOverride | null>(null);
+  const [overrideLoaded, setOverrideLoaded] = useState(false);
+
+  // Admin-standarden gælder for alle rejser og er uafhængig af, hvilken
+  // rejse man kigger på — hentes derfor kun én gang.
+  useEffect(() => {
+    let annulleret = false;
+    supabase
+      .from('admin_settings')
+      .select('value')
+      .eq('key', 'trip_nav_order')
+      .maybeSingle()
+      .then(({ data }) => {
+        if (annulleret) return;
+        setAdminOrder(parseTripNavOrder(data?.value as string | undefined));
+      });
+    return () => {
+      annulleret = true;
+    };
+  }, []);
+
+  // Rejsens egen overstyring, sat fra Overblik-siden. Hentes pr. rejse, og
+  // genhentes hvis man navigerer fra én rejse til en anden uden at hele
+  // layoutet skifter (React Router genbruger komponenten ved skift af
+  // :tripId alene).
+  useEffect(() => {
+    if (!tripId) return;
+    let annulleret = false;
+    setOverrideLoaded(false);
+    supabase
+      .from('trip_nav_overrides')
+      .select('nav_order, disabled_pages')
+      .eq('trip_id', tripId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (annulleret) return;
+        setTripOverride(parseTripNavOverride(data));
+        setOverrideLoaded(true);
+      });
+    return () => {
+      annulleret = true;
+    };
+  }, [tripId]);
+
+  if (loading || adminOrder === null || !overrideLoaded) {
+    return <div className="p-8 text-river-500">Indlæser rejse…</div>;
+  }
   if (!trip) return <div className="p-8 text-river-500">Rejsen blev ikke fundet.</div>;
 
-  const tabs = [
-    { to: `/rejser/${tripId}`, label: 'Overblik', end: true },
-    { to: `/rejser/${tripId}/pakkeliste`, label: 'Pakkeliste' },
-    { to: `/rejser/${tripId}/rejseplan`, label: 'Rejseplan' },
-    { to: `/rejser/${tripId}/regnskab`, label: 'Regnskab' },
-    { to: `/rejser/${tripId}/koersel`, label: 'Kørsel' },
-  ];
+  // Rejsens egen overstyring vinder over admin-standarden, hvis den findes.
+  const tabs: Tab[] = resolveTripPages(adminOrder, tripOverride, trip.trip_type === 'gudenaa').map(
+    (page) => ({
+      to: tripPageHref(tripId!, page),
+      label: page.label,
+      end: page.end,
+    })
+  );
 
-  if (trip.trip_type === 'gudenaa') {
-    tabs.push(
-      { to: `/rejser/${tripId}/ruteplanlaegger`, label: 'Ruteplanlægger' },
-      { to: `/rejser/${tripId}/statistik`, label: 'Statistik' },
-      { to: `/rejser/${tripId}/sejltider`, label: 'Sejltider' }
-    );
+  // Rejsens "rod" (fx /rejser/abc123, uden noget efter) er ikke længere en
+  // side i sig selv — hver fane, inklusive Overblik, har nu sin egen
+  // adresse. Roden er derfor altid bare et videresendelsespunkt til den
+  // fane, der ligger først i den gemte rækkefølge.
+  const tripRootPath = `/rejser/${tripId}`;
+  const isAtTripRoot = location.pathname === tripRootPath || location.pathname === `${tripRootPath}/`;
+  const firstTab = tabs[0];
+  if (isAtTripRoot && firstTab) {
+    return <Navigate to={firstTab.to} replace />;
+  }
+
+  function isTabActive(tab: Tab): boolean {
+    return tab.end ? location.pathname === tab.to : location.pathname.startsWith(tab.to);
   }
 
   return (
@@ -43,7 +124,14 @@ function TripLayoutInner() {
         <p className="text-sm text-river-500">{trip.destination}</p>
       </div>
 
-      <div className="mb-6 flex gap-1 overflow-x-auto border-b border-river-100 pb-2">
+      {/* Mobil: faste faner + "Mere"-menu, så skjulte sider aldrig kræver at
+          nogen selv opdager, at baren kan scrolles. */}
+      <div className="mb-6 sm:hidden">
+        <MobileTabBar tabs={tabs} isTabActive={isTabActive} />
+      </div>
+
+      {/* Fra sm og op er der normalt plads til alle faner i én række. */}
+      <div className="mb-6 hidden gap-1 overflow-x-auto border-b border-river-100 pb-2 sm:flex">
         {tabs.map((tab) => (
           <NavLink
             key={tab.to}
@@ -57,6 +145,137 @@ function TripLayoutInner() {
       </div>
 
       <Outlet />
+    </div>
+  );
+}
+
+function MobileTabBar({ tabs, isTabActive }: { tabs: Tab[]; isTabActive: (tab: Tab) => boolean }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  const primaryTabs = tabs.slice(0, MOBILE_PRIMARY_COUNT);
+  const restTabs = tabs.slice(MOBILE_PRIMARY_COUNT);
+  const activeHiddenTab = restTabs.find(isTabActive);
+
+  // Luk menuen ved klik udenfor eller Escape, så den ikke bliver hængende
+  // åben, hvis man trykker et andet sted på siden.
+  useEffect(() => {
+    if (!open) return;
+
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false);
+    }
+
+    document.addEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [open]);
+
+  // Skifter automatisk til lukket, hver gang man rent faktisk navigerer et
+  // sted hen — også hvis det sker på anden vis end via selve menuen.
+  useEffect(() => {
+    setOpen(false);
+  }, [restTabs.map((t) => t.to).join(',')]);
+
+  if (restTabs.length === 0) {
+    // Færre end fire faner i alt — ingen grund til en "Mere"-knap.
+    return (
+      <div className="flex gap-0.5 border-b border-river-100 pb-2">
+        {tabs.map((tab) => (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            end={tab.end}
+            className={({ isActive }) =>
+              `tab min-w-0 flex-1 truncate px-2 py-1.5 text-center text-xs ${
+                isActive ? 'tab-active' : 'tab-inactive'
+              }`
+            }
+          >
+            {tab.label}
+          </NavLink>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative border-b border-river-100 pb-2" ref={menuRef}>
+      <div className="flex gap-0.5">
+        {primaryTabs.map((tab) => (
+          <NavLink
+            key={tab.to}
+            to={tab.to}
+            end={tab.end}
+            // flex-[2] mod knappens flex-1: er der ikke plads til alle
+            // labels fuldt ud, er det "Mere"/den aktive skjulte side, der
+            // afkortes først — man kan jo se hele navnet, når menuen åbnes.
+            className={({ isActive }) =>
+              `tab min-w-0 flex-[2] truncate px-2 py-1.5 text-center text-xs ${
+                isActive ? 'tab-active' : 'tab-inactive'
+              }`
+            }
+          >
+            {tab.label}
+          </NavLink>
+        ))}
+
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className={`tab flex min-w-0 flex-1 items-center justify-center gap-1 px-2 py-1.5 text-center text-xs ${
+            activeHiddenTab ? 'tab-active' : 'tab-inactive'
+          }`}
+        >
+          <span className="min-w-0 truncate">{activeHiddenTab ? activeHiddenTab.label : 'Mere'}</span>
+          <svg
+            viewBox="0 0 20 20"
+            className={`h-3 w-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+            aria-hidden="true"
+          >
+            <path
+              d="M5 7.5 L10 12.5 L15 7.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full z-20 mt-1 w-48 overflow-hidden rounded-lg border border-river-100 bg-surface py-1 shadow-lg"
+        >
+          {restTabs.map((tab) => (
+            <NavLink
+              key={tab.to}
+              to={tab.to}
+              end={tab.end}
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className={({ isActive }) =>
+                `block px-4 py-2 text-sm ${
+                  isActive ? 'bg-river-50 font-medium text-river-800' : 'text-river-600 hover:bg-river-50'
+                }`
+              }
+            >
+              {tab.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

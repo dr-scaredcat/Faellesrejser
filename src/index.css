@@ -60,7 +60,7 @@
     @apply bg-surface rounded-xl border border-river-100 shadow-sm;
   }
   .input {
-    @apply w-full rounded-lg border border-river-200 px-3 py-2 text-sm focus:border-river-500 focus:ring-1 focus:ring-river-500 outline-none;
+    @apply w-full rounded-lg border border-river-200 px-3 py-2 text-base sm:text-sm focus:border-river-500 focus:ring-1 focus:ring-river-500 outline-none;
   }
   .label {
     @apply block text-sm font-medium text-river-800 mb-1;

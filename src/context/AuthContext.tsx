@@ -21,8 +21,52 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   async function loadProfile(userId: string) {
-    const { data } = await supabase.from('profiles').select('*').eq('id', userId).single();
-    setProfile(data as Profile | null);
+    const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+
+    if (data) {
+      setProfile(data as Profile);
+      return;
+    }
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('[Fællesrejser] Kunne ikke hente profil for bruger', userId, error);
+    }
+
+    // Brugeren findes i auth.users, men mangler en profil-række i
+    // faellesrejser.profiles (fx fordi kontoen oprindeligt blev oprettet
+    // gennem en anden app der deler samme Supabase-projekt). Vi opretter
+    // derfor profilen her i stedet. Nye profiler oprettet på denne måde er
+    // IKKE admin som udgangspunkt — det skal sættes manuelt i databasen.
+    if (error && error.code === 'PGRST116') {
+      const { data: userData } = await supabase.auth.getUser();
+      const user = userData.user;
+      if (!user) {
+        setProfile(null);
+        return;
+      }
+
+      const { data: created, error: insertError } = await supabase
+        .from('profiles')
+        .insert({
+          id: user.id,
+          email: user.email ?? '',
+          name: (user.user_metadata?.name as string | undefined) ?? user.email?.split('@')[0] ?? 'Bruger',
+          is_admin: false,
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        // eslint-disable-next-line no-console
+        console.error('[Fællesrejser] Kunne ikke oprette manglende profil automatisk', insertError);
+      }
+
+      setProfile((created as Profile | null) ?? null);
+      return;
+    }
+
+    setProfile(null);
   }
 
   useEffect(() => {

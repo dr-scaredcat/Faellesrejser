@@ -2,6 +2,7 @@ import { FormEvent, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../context/AuthContext';
+import { DatePicker } from '../components/DatePicker';
 import type { TripType } from '../lib/types';
 
 export default function TripCreatePage() {
@@ -15,9 +16,27 @@ export default function TripCreatePage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  function handleStartDateChange(iso: string) {
+    setStartDate(iso);
+    // Slutdatoen skal altid ligge på eller efter startdatoen. Hvis den
+    // nuværende slutdato ikke gør det (eller mangler), rykkes den automatisk
+    // til at matche startdatoen.
+    if (!endDate || endDate < iso) {
+      setEndDate(iso);
+    }
+  }
+
+  function handleEndDateChange(iso: string) {
+    if (startDate && iso < startDate) return;
+    setEndDate(iso);
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    if (!profile) return;
+    if (!profile) {
+      setError('Din bruger er ikke sat korrekt op endnu. Prøv at logge ud og ind igen, eller kontakt en administrator.');
+      return;
+    }
     setBusy(true);
     setError(null);
 
@@ -79,21 +98,11 @@ export default function TripCreatePage() {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="label">Startdato</label>
-            <input
-              type="date"
-              className="input"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
+            <DatePicker value={startDate} onChange={handleStartDateChange} />
           </div>
           <div>
             <label className="label">Slutdato</label>
-            <input
-              type="date"
-              className="input"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
+            <DatePicker value={endDate} onChange={handleEndDateChange} min={startDate || undefined} />
           </div>
         </div>
         <div>
