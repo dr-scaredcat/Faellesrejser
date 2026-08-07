@@ -8,6 +8,16 @@ import { compassFromDegrees, describeWindEffect, resultantCourse, windEffect } f
 import { formatHours } from '../../lib/stats';
 import type { SailingTimeWithFlow } from '../../lib/types';
 
+/** Vandføring for én målestation, enten friskt målt eller gårsdagens middel. */
+interface FlowResult {
+  position: string;
+  station: string;
+  /** Vandføring i forhold til medianen for årstiden. */
+  ratio: number;
+  /** Tidspunkt for målingen. Null betyder gårsdagens døgnmiddel. */
+  measuredAt: string | null;
+}
+
 export default function PositionPage() {
   const { stops, loading: stopsLoading } = useGudenaaStops();
   const [sailingTimes, setSailingTimes] = useState<SailingTimeWithFlow[]>([]);
@@ -18,9 +28,7 @@ export default function PositionPage() {
   // visning, hvor vi kender den valgte position — vandføringen neden for
   // Tange er en helt anden størrelse end oven for, så det er ikke
   // ligegyldigt hvilken der bruges.
-  const [flowResults, setFlowResults] = useState<
-    { position: string; station: string; ratio: number }[]
-  >([]);
+  const [flowResults, setFlowResults] = useState<FlowResult[]>([]);
   const [flowLoading, setFlowLoading] = useState(true);
 
   // Den senest MÅLTE vind — en enkelt observation, ikke et døgnmiddel.
@@ -53,9 +61,11 @@ export default function PositionPage() {
 
   async function loadFlow() {
     setFlowLoading(true);
-    const igaar = new Date();
-    igaar.setUTCDate(igaar.getUTCDate() - 1);
-    const dato = igaar.toISOString().slice(0, 10);
+
+    const idag = new Date().toISOString().slice(0, 10);
+    const igaarDato = new Date();
+    igaarDato.setUTCDate(igaarDato.getUTCDate() - 1);
+    const igaar = igaarDato.toISOString().slice(0, 10);
 
     const { data: stationer } = await supabase
       .from('hydro_stations')
@@ -63,18 +73,52 @@ export default function PositionPage() {
       .eq('is_active', true)
       .order('sort_order');
 
-    const resultater: { position: string; station: string; ratio: number }[] = [];
-    for (const station of stationer ?? []) {
-      const { data } = await supabase.rpc('flow_context', {
-        _station_id: station.id,
-        _date: dato,
+    // Den seneste måling hentes direkte fra VanDa. Slår det fejl, falder vi
+    // tilbage på gårsdagens døgnmiddel, som altid er der.
+    let seneste: Record<string, { flowM3s: number | null; measuredAt: string | null }> = {};
+    try {
+      const { data: nyeste } = await supabase.functions.invoke('hent-nyeste-vandfoering', {
+        body: {},
       });
-      const raekke = data?.[0];
-      if (raekke?.ratio_to_median != null) {
+      for (const r of nyeste?.resultat ?? []) {
+        seneste[r.stationId] = { flowM3s: r.flowM3s, measuredAt: r.measuredAt };
+      }
+    } catch {
+      seneste = {};
+    }
+
+    const resultater: FlowResult[] = [];
+
+    for (const station of stationer ?? []) {
+      // flow_context giver medianen for årstiden, også for en dag hvor der
+      // endnu ikke findes et døgnmiddel — det er præcis det, vi skal bruge
+      // for at kunne normalisere en frisk måling.
+      const [{ data: idagData }, { data: igaarData }] = await Promise.all([
+        supabase.rpc('flow_context', { _station_id: station.id, _date: idag }),
+        supabase.rpc('flow_context', { _station_id: station.id, _date: igaar }),
+      ]);
+
+      const median = Number(idagData?.[0]?.median_m3s ?? igaarData?.[0]?.median_m3s);
+      const nyMaaling = seneste[station.id];
+
+      if (nyMaaling?.flowM3s != null && isFinite(median) && median > 0) {
         resultater.push({
           position: station.position,
           station: station.name,
-          ratio: Number(raekke.ratio_to_median),
+          ratio: nyMaaling.flowM3s / median,
+          measuredAt: nyMaaling.measuredAt,
+        });
+        continue;
+      }
+
+      // Reserve: gårsdagens færdige døgnmiddel.
+      const igaarRatio = igaarData?.[0]?.ratio_to_median;
+      if (igaarRatio != null) {
+        resultater.push({
+          position: station.position,
+          station: station.name,
+          ratio: Number(igaarRatio),
+          measuredAt: null,
         });
       }
     }
@@ -307,7 +351,15 @@ export default function PositionPage() {
           <p className="text-xs text-river-400">
             {flowInfo ? (
               <>
-                Vandføring (i går) ved {flowInfo.station}:{' '}
+                Vandføring{' '}
+                {flowInfo.measuredAt
+                  ? `(målt kl. ${new Intl.DateTimeFormat('da-DK', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      timeZone: 'Europe/Copenhagen',
+                    }).format(new Date(flowInfo.measuredAt))})`
+                  : '(i går)'}{' '}
+                ved {flowInfo.station}:{' '}
                 <span className={flowInfo.ratio >= 1 ? 'text-river-600' : 'text-sand-600'}>
                   {flowInfo.ratio >= 1 ? '+' : ''}
                   {((flowInfo.ratio - 1) * 100).toFixed(0)}% ift. normalt for årstiden
@@ -395,7 +447,11 @@ export default function PositionPage() {
           {pureModel && (
             <p className="text-xs text-river-400">
               Estimaterne bygger på {describeModel(pureModel)}
-              {flowInfo ? ', justeret for gårsdagens vandføring' : ''}
+              {flowInfo
+                ? flowInfo.measuredAt
+                  ? ', justeret for den senest målte vandføring'
+                  : ', justeret for gårsdagens vandføring'
+                : ''}
               {windInfo ? ' og for den senest målte vind' : ''}. Prædiktionsintervallet [lav : høj] er,
               hvor en enkelt ny tur forventes at lande indenfor med 95% sikkerhed — ikke usikkerheden på
               et gennemsnit.

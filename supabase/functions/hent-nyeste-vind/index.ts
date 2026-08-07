@@ -19,18 +19,6 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const DMI_BASE = 'https://opendataapi.dmi.dk/v2/climateData/collections/stationValue/items';
 
-// Denne funktion kaldes fra BROWSEREN (Position-siden), modsat
-// hent-vandfoering og hent-vind, der kun kaldes fra cron på serversiden.
-// Browserkald kræver CORS-headere, og browseren sender først en OPTIONS-
-// forespørgsel for at spørge om lov. Uden begge dele afvises kaldet, før
-// funktionen overhovedet kører — og det sker kun i browseren, ikke i
-// dashboardets testværktøj, som går uden om CORS.
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-};
-
 // Vinduet vi kigger tilbage i for at finde den seneste måling. Seks timer er
 // rigeligt til at overleve almindelige forsinkelser i DMI's indlæsning uden
 // at hente mere data end nødvendigt.
@@ -54,11 +42,6 @@ interface StationResult {
 }
 
 Deno.serve(async (req) => {
-  // Browserens preflight-forespørgsel. Skal besvares før alt andet.
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
-  }
-
   if (req.method !== 'POST') {
     return svar({ error: 'Brug POST.' }, 405);
   }
@@ -163,6 +146,6 @@ async function hentParameter(
 function svar(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
-    headers: { ...corsHeaders, 'content-type': 'application/json; charset=utf-8' },
+    headers: { 'content-type': 'application/json; charset=utf-8' },
   });
 }
