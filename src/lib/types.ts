@@ -96,6 +96,11 @@ export interface Expense {
    * men indgår slet ikke i "hvem skylder hvem".
    */
   is_settled: boolean;
+  /**
+   * Sat når udgiften er oprettet automatisk fra et punkt på rejseplanen.
+   * Titel, beløb og dato styres så derfra; kategori, betaler og deling her.
+   */
+  itinerary_item_id: string | null;
   paid_by_profile?: Profile;
   participant_ids?: string[];
 }

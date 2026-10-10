@@ -196,9 +196,12 @@ export default function ExpensesPage() {
     if (ok) load();
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Slet denne post?')) return;
-    const { ok } = await mutate(supabase.from('expenses').delete().eq('id', id));
+  async function handleDelete(exp: Expense) {
+    const tekst = exp.itinerary_item_id
+      ? 'Slet denne post? Den er lagt ind fra rejseplanen — prisen bliver stående på punktet, men posten lægges ikke ind igen.'
+      : 'Slet denne post?';
+    if (!confirm(tekst)) return;
+    const { ok } = await mutate(supabase.from('expenses').delete().eq('id', exp.id));
     if (ok) load();
   }
 
@@ -576,6 +579,12 @@ export default function ExpensesPage() {
           <div key={exp.id} className={`card p-4 ${exp.is_settled ? 'opacity-60' : ''}`}>
             {editingExpenseId === exp.id ? (
               <form onSubmit={handleUpdate} className="space-y-3">
+                {exp.itinerary_item_id && (
+                  <p className="text-xs text-river-400">
+                    Posten er lagt ind fra rejseplanen. Beskrivelse, beløb og dato overskrives, hvis punktet
+                    redigeres der.
+                  </p>
+                )}
                 <input
                   className="input"
                   placeholder="Beskrivelse"
@@ -659,6 +668,11 @@ export default function ExpensesPage() {
                   <p className="font-medium text-river-800">
                     {exp.description || exp.category}{' '}
                     <span className="text-xs font-normal text-river-400">({exp.category})</span>
+                    {exp.itinerary_item_id && (
+                      <span className="ml-1 rounded-full bg-river-50 px-2 py-0.5 text-[10px] font-normal text-river-500">
+                        fra rejseplan
+                      </span>
+                    )}
                   </p>
                   <p className="text-sm text-river-500">
                     {formatCurrency(exp.amount)} · lagt ud af {namesById[exp.paid_by] ?? '?'} ·{' '}
@@ -688,7 +702,7 @@ export default function ExpensesPage() {
                       </button>
                       <button
                         className="text-xs text-red-500 hover:underline"
-                        onClick={() => handleDelete(exp.id)}
+                        onClick={() => handleDelete(exp)}
                       >
                         Slet
                       </button>
